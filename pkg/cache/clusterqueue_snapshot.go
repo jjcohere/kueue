@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/labels"
@@ -71,6 +72,20 @@ func (c *ClusterQueueSnapshot) Borrowing(fr resources.FlavorResource) bool {
 
 func (c *ClusterQueueSnapshot) BorrowingWith(fr resources.FlavorResource, val int64) bool {
 	return c.Usage[fr]+val > c.nominal(fr)
+}
+
+func (c *ClusterQueueSnapshot) Log(log logr.Logger, msg string, frsNeedPreemption sets.Set[resources.FlavorResource]) {
+	for fr := range frsNeedPreemption {
+		log.V(3).Info(msg,
+			"name", c.Name,
+			"cohort", c.Cohort.Name,
+			"flavor", fr.Flavor,
+			"flavorResource", fr,
+			"usage", c.usageFor(fr),
+			"nominalQuota", c.QuotaFor(fr).Nominal,
+			"available", c.Available(fr),
+		)
+	}
 }
 
 func (c *ClusterQueueSnapshot) Available(fr resources.FlavorResource) int64 {

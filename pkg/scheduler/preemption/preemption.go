@@ -225,17 +225,20 @@ func (p *Preemptor) applyPreemptionWithSSA(ctx context.Context, w *kueue.Workloa
 // reverse order in which they were removed, while the incoming Workload still
 // fits.
 func minimalPreemptions(log logr.Logger, requests resources.FlavorResourceQuantities, cq *cache.ClusterQueueSnapshot, snapshot *cache.Snapshot, frsNeedPreemption sets.Set[resources.FlavorResource], candidates []*workload.Info, allowBorrowing bool, allowBorrowingBelowPriority *int32) []*Target {
-	if logV := log.V(5); logV.Enabled() {
-		logV.Info("Simulating preemption", "candidates", workload.References(candidates), "resourcesRequiringPreemption", frsNeedPreemption, "allowBorrowing", allowBorrowing, "allowBorrowingBelowPriority", allowBorrowingBelowPriority)
+	if logV := log.V(3); logV.Enabled() {
+		logV.Info("Simulating preemption", "candidates", workload.References(candidates), "resourcesRequiringPreemption", frsNeedPreemption.UnsortedList(), "allowBorrowing", allowBorrowing, "allowBorrowingBelowPriority", allowBorrowingBelowPriority)
 	}
 	// Simulate removing all candidates from the ClusterQueue and cohort.
 	var targets []*Target
 	fits := false
 	for _, candWl := range candidates {
+		log.V(3).Info("Checking candidate", "clusterqueue", cq.Name, "candidateCQ", candWl.ClusterQueue, "candidate", candWl.Obj.Name)
 		candCQ := snapshot.ClusterQueues[candWl.ClusterQueue]
 		reason := kueue.InClusterQueueReason
 		if cq != candCQ {
+			candCQ.Log(log, "Cluster queue snapshot at the start of the simulation", frsNeedPreemption)
 			if !cqIsBorrowing(candCQ, frsNeedPreemption) {
+				log.V(3).Info("candidate cluster queue isn't borrowing any resource flavor that need preemption", "clusterqueue", cq.Name, "candidateCQ", candWl.ClusterQueue, "candidate", candWl.Obj.Name)
 				continue
 			}
 			reason = kueue.InCohortReclamationReason
@@ -259,12 +262,15 @@ func minimalPreemptions(log logr.Logger, requests resources.FlavorResourceQuanti
 				}
 			}
 		}
+		log.V(3).Info("attempting to remove workload from clusterqueue for reason", "candidateCQ", candCQ.Name, "candidate", candWl.Obj.Name, "reason", reason)
 		snapshot.RemoveWorkload(candWl)
 		targets = append(targets, &Target{
 			WorkloadInfo: candWl,
 			Reason:       reason,
 		})
+		candCQ.Log(log, fmt.Sprintf("Cluster queue snapshot after removing candidate workload %s", candWl.Obj.Name), frsNeedPreemption)
 		if workloadFits(requests, cq, allowBorrowing) {
+			log.V(3).Info("workload fits in cq after removing candidate", "candidateCQ", candCQ.Name, "candidate", candWl.Obj.Name)
 			fits = true
 			break
 		}
