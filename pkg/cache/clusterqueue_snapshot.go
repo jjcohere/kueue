@@ -76,7 +76,7 @@ func (c *ClusterQueueSnapshot) BorrowingWith(fr resources.FlavorResource, val in
 
 func (c *ClusterQueueSnapshot) Log(log logr.Logger, msg string, frsNeedPreemption sets.Set[resources.FlavorResource]) {
 	for fr := range frsNeedPreemption {
-		log.V(3).Info(msg,
+		log.V(2).Info(msg,
 			"name", c.Name,
 			"cohort", c.Cohort.Name,
 			"flavor", fr.Flavor,
