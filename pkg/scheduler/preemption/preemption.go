@@ -269,7 +269,7 @@ func minimalPreemptions(log logr.Logger, requests resources.FlavorResourceQuanti
 			Reason:       reason,
 		})
 		candCQ.Log(log, fmt.Sprintf("Cluster queue snapshot after removing candidate workload %s", candWl.Obj.Name), frsNeedPreemption)
-		if workloadFits(requests, cq, allowBorrowing) {
+		if workloadFits(log, requests, cq, allowBorrowing) {
 			log.V(2).Info("workload fits in cq after removing candidate", "candidateCQ", candCQ.Name, "candidate", candWl.Obj.Name)
 			fits = true
 			break
@@ -279,16 +279,16 @@ func minimalPreemptions(log logr.Logger, requests resources.FlavorResourceQuanti
 		restoreSnapshot(snapshot, targets)
 		return nil
 	}
-	targets = fillBackWorkloads(targets, requests, cq, snapshot, allowBorrowing)
+	targets = fillBackWorkloads(log, targets, requests, cq, snapshot, allowBorrowing)
 	restoreSnapshot(snapshot, targets)
 	return targets
 }
 
-func fillBackWorkloads(targets []*Target, requests resources.FlavorResourceQuantities, cq *cache.ClusterQueueSnapshot, snapshot *cache.Snapshot, allowBorrowing bool) []*Target {
+func fillBackWorkloads(log logr.Logger, targets []*Target, requests resources.FlavorResourceQuantities, cq *cache.ClusterQueueSnapshot, snapshot *cache.Snapshot, allowBorrowing bool) []*Target {
 	// In the reverse order, check if any of the workloads can be added back.
 	for i := len(targets) - 2; i >= 0; i-- {
 		snapshot.AddWorkload(targets[i].WorkloadInfo)
-		if workloadFits(requests, cq, allowBorrowing) {
+		if workloadFits(log, requests, cq, allowBorrowing) {
 			// O(1) deletion: copy the last element into index i and reduce size.
 			targets[i] = targets[len(targets)-1]
 			targets = targets[:len(targets)-1]
@@ -356,7 +356,7 @@ func (p *Preemptor) fairPreemptions(log logr.Logger, wl workload.Info, requests 
 				WorkloadInfo: candWl,
 				Reason:       kueue.InClusterQueueReason,
 			})
-			if workloadFits(requests, nominatedCQ, true) {
+			if workloadFits(log, requests, nominatedCQ, true) {
 				fits = true
 				break
 			}
@@ -384,7 +384,7 @@ func (p *Preemptor) fairPreemptions(log logr.Logger, wl workload.Info, requests 
 					WorkloadInfo: candWl,
 					Reason:       reason,
 				})
-				if workloadFits(requests, nominatedCQ, true) {
+				if workloadFits(log, requests, nominatedCQ, true) {
 					fits = true
 					break
 				}
@@ -416,7 +416,7 @@ func (p *Preemptor) fairPreemptions(log logr.Logger, wl workload.Info, requests 
 					WorkloadInfo: candWl,
 					Reason:       kueue.InCohortFairSharingReason,
 				})
-				if workloadFits(requests, nominatedCQ, true) {
+				if workloadFits(log, requests, nominatedCQ, true) {
 					fits = true
 				}
 				// No requeueing because there doesn't seem to be an scenario where
@@ -428,7 +428,7 @@ func (p *Preemptor) fairPreemptions(log logr.Logger, wl workload.Info, requests 
 		restoreSnapshot(snapshot, targets)
 		return nil
 	}
-	targets = fillBackWorkloads(targets, requests, nominatedCQ, snapshot, true)
+	targets = fillBackWorkloads(log, targets, requests, nominatedCQ, snapshot, true)
 	restoreSnapshot(snapshot, targets)
 	return targets
 }
@@ -553,8 +553,15 @@ func workloadUsesResources(wl *workload.Info, frsNeedPreemption sets.Set[resourc
 // workloadFits determines if the workload requests would fit given the
 // requestable resources and simulated usage of the ClusterQueue and its cohort,
 // if it belongs to one.
-func workloadFits(requests resources.FlavorResourceQuantities, cq *cache.ClusterQueueSnapshot, allowBorrowing bool) bool {
+func workloadFits(log logr.Logger, requests resources.FlavorResourceQuantities, cq *cache.ClusterQueueSnapshot, allowBorrowing bool) bool {
 	for fr, v := range requests {
+		log.V(2).Info("checking if workload fits",
+			"flavorResource", fr,
+			"requests", v,
+			"available", cq.Available(fr),
+			"allowBorrowing", allowBorrowing,
+			"borrowingWith", cq.BorrowingWith(fr, v))
+		// if we cant borrow and usage > nominal
 		if !allowBorrowing && cq.BorrowingWith(fr, v) {
 			return false
 		}
