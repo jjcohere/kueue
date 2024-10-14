@@ -235,8 +235,8 @@ func minimalPreemptions(log logr.Logger, requests resources.FlavorResourceQuanti
 		log.V(2).Info("Checking candidate", "clusterqueue", cq.Name, "candidateCQ", candWl.ClusterQueue, "candidate", candWl.Obj.Name)
 		candCQ := snapshot.ClusterQueues[candWl.ClusterQueue]
 		reason := kueue.InClusterQueueReason
+		candCQ.Log(log, "Cluster queue snapshot at the start of the simulation", frsNeedPreemption)
 		if cq != candCQ {
-			candCQ.Log(log, "Cluster queue snapshot at the start of the simulation", frsNeedPreemption)
 			if !cqIsBorrowing(candCQ, frsNeedPreemption) {
 				log.V(2).Info("candidate cluster queue isn't borrowing any resource flavor that need preemption", "clusterqueue", cq.Name, "candidateCQ", candWl.ClusterQueue, "candidate", candWl.Obj.Name)
 				continue

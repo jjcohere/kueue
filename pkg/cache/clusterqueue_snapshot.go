@@ -83,6 +83,8 @@ func (c *ClusterQueueSnapshot) Log(log logr.Logger, msg string, frsNeedPreemptio
 			"flavorResource", fr,
 			"usage", c.usageFor(fr),
 			"nominalQuota", c.QuotaFor(fr).Nominal,
+			"requestableCohortQuota", c.RequestableCohortQuota(fr),
+			"usedCohortQuota", c.UsedCohortQuota(fr),
 			"available", c.Available(fr),
 		)
 	}
