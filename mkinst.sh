@@ -5,7 +5,7 @@ set -e
 cd $(dirname $0)
 
 #docker build -t registry.k8s.io/kueue/kueue:$TAG .
-CGO_ENABLED=0 go build -o cmd/kueue/kueue cmd/kueue/main.go
+CGO_ENABLED=0 go build -gcflags='all=-l -N' -o cmd/kueue/kueue cmd/kueue/main.go
 
 TAG=$(date +%d%H%M)
 docker build -t registry.k8s.io/kueue/kueue:$TAG -f Dockerfile.dev .
@@ -42,12 +42,12 @@ spec:
         - /kueue
         image: registry.k8s.io/kueue/kueue:$TAG
         imagePullPolicy: Never
-        livenessProbe:
-          httpGet:
-            path: /healthz
-            port: 8081
-          initialDelaySeconds: 15
-          periodSeconds: 20
+        # livenessProbe:
+        #   httpGet:
+        #     path: /healthz
+        #     port: 8081
+        #   initialDelaySeconds: 15
+        #   periodSeconds: 20
         name: manager
         ports:
         - containerPort: 8082
@@ -56,12 +56,12 @@ spec:
         - containerPort: 9443
           name: webhook-server
           protocol: TCP
-        readinessProbe:
-          httpGet:
-            path: /readyz
-            port: 8081
-          initialDelaySeconds: 5
-          periodSeconds: 10
+        # readinessProbe:
+        #   httpGet:
+        #     path: /readyz
+        #     port: 8081
+        #   initialDelaySeconds: 5
+        #   periodSeconds: 10
         resources:
           limits:
             cpu: 500m
@@ -115,8 +115,8 @@ data:
     webhook:
       port: 9443
     leaderElection:
-      leaderElect: true
-      resourceName: c1f6bfd2.kueue.x-k8s.io
+      leaderElect: false
+      #resourceName: c1f6bfd2.kueue.x-k8s.io
     controller:
       groupKindConcurrency:
         Job.batch: 5
