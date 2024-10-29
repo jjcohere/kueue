@@ -269,7 +269,7 @@ func minimalPreemptions(log logr.Logger, requests resources.FlavorResourceQuanti
 			Reason:       reason,
 		})
 		candCQ.Log(log, fmt.Sprintf("Cluster queue snapshot after removing candidate workload %s", candWl.Obj.Name), frsNeedPreemption)
-		if workloadFits(log, requests, cq, allowBorrowing) {
+		if workloadFitsWithUnrelatedBorrowing(log, requests, frsNeedPreemption, cq, allowBorrowing) {
 			log.V(2).Info("workload fits in cq after removing candidate", "candidateCQ", candCQ.Name, "candidate", candWl.Obj.Name)
 			fits = true
 			break
@@ -282,6 +282,31 @@ func minimalPreemptions(log logr.Logger, requests resources.FlavorResourceQuanti
 	targets = fillBackWorkloads(log, targets, requests, cq, snapshot, allowBorrowing)
 	restoreSnapshot(snapshot, targets)
 	return targets
+}
+
+func workloadFitsWithUnrelatedBorrowing(log logr.Logger, requests resources.FlavorResourceQuantities, frsNeedPreemption sets.Set[resources.FlavorResource], cq *cache.ClusterQueueSnapshot, allowBorrowing bool) bool {
+	if allowBorrowing {
+		// Just pass this straight to workloadFits.
+		return workloadFits(log, requests, cq, true)
+	}
+
+	// Separate the requests out into resource flavors where borrowing is allowed and where it isn't.
+	resourceFlavorsBorrowingProhibited := make(sets.Set[kueue.ResourceFlavorReference])
+	for k := range frsNeedPreemption {
+		resourceFlavorsBorrowingProhibited[k.Flavor] = sets.Empty{}
+	}
+
+	requestsNoBorrowing := make(resources.FlavorResourceQuantities)
+	requestsOkBorrowing := make(resources.FlavorResourceQuantities)
+	for fr, q := range requests {
+		if _, ok := resourceFlavorsBorrowingProhibited[fr.Flavor]; ok {
+			requestsNoBorrowing[fr] = q
+		} else {
+			requestsOkBorrowing[fr] = q
+		}
+	}
+
+	return workloadFits(log, requestsNoBorrowing, cq, false) && workloadFits(log, requestsOkBorrowing, cq, true)
 }
 
 func fillBackWorkloads(log logr.Logger, targets []*Target, requests resources.FlavorResourceQuantities, cq *cache.ClusterQueueSnapshot, snapshot *cache.Snapshot, allowBorrowing bool) []*Target {
