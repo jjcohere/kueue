@@ -101,6 +101,12 @@
     lockToDefault: false
     preRelease: Beta
     version: "0.17"
+- name: FairSharingReevaluatePreemptionCandidates
+  versionedSpecs:
+  - default: false
+    lockToDefault: false
+    preRelease: Alpha
+    version: "0.18"
 - name: FastQuotaReleaseInPodIntegration
   versionedSpecs:
   - default: false
@@ -255,6 +261,12 @@
     lockToDefault: false
     preRelease: Deprecated
     version: "0.17"
+- name: MultiKueueBatchJobClearingTTLSecondsAfterFinishedOnWorkerCluster
+  versionedSpecs:
+  - default: false
+    lockToDefault: false
+    preRelease: Alpha
+    version: "0.18"
 - name: MultiKueueBatchJobWithManagedBy
   versionedSpecs:
   - default: false
@@ -401,6 +413,12 @@
     lockToDefault: false
     preRelease: Beta
     version: "0.17"
+- name: ReservedResourceNameValidation
+  versionedSpecs:
+  - default: false
+    lockToDefault: false
+    preRelease: Alpha
+    version: "0.18"
 - name: SanitizePodSets
   versionedSpecs:
   - default: true
@@ -432,6 +450,12 @@
   - default: true
     lockToDefault: false
     preRelease: Beta
+    version: "0.18"
+- name: SchedulingEquivalenceHashingIgnorePodSetName
+  versionedSpecs:
+  - default: false
+    lockToDefault: false
+    preRelease: Alpha
     version: "0.18"
 - name: ShortWorkloadNames
   versionedSpecs:

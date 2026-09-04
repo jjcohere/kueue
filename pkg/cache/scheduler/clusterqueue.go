@@ -148,6 +148,12 @@ func (c *clusterQueue) updateClusterQueue(
 	admissionChecks map[kueue.AdmissionCheckReference]AdmissionCheck,
 	oldParent *cohort,
 ) error {
+	nsSelector, err := metav1.LabelSelectorAsSelector(in.Spec.NamespaceSelector)
+	if err != nil {
+		return err
+	}
+	c.NamespaceSelector = nsSelector
+
 	if c.updateQuotasAndResourceGroups(in.Spec.ResourceGroups) || oldParent != c.Parent() {
 		if oldParent != nil && oldParent != c.Parent() {
 			updateCohortTreeResourcesIfNoCycle(oldParent)
@@ -163,12 +169,6 @@ func (c *clusterQueue) updateClusterQueue(
 			updateClusterQueueResourceNode(c)
 		}
 	}
-
-	nsSelector, err := metav1.LabelSelectorAsSelector(in.Spec.NamespaceSelector)
-	if err != nil {
-		return err
-	}
-	c.NamespaceSelector = nsSelector
 
 	c.isStopped = ptr.Deref(in.Spec.StopPolicy, kueue.None) != kueue.None
 
@@ -493,8 +493,7 @@ func (c *clusterQueue) addOrUpdateWorkload(log logr.Logger, w *kueue.Workload) {
 	if _, exist := c.Workloads[k]; exist {
 		c.deleteWorkload(log, k)
 	}
-	wi := workload.NewInfo(w, c.workloadInfoOptions...)
-	wi.UpdateSchedulingHash(log)
+	wi := workload.NewInfoWithLogger(log, w, c.workloadInfoOptions...)
 	c.Workloads[k] = wi
 	c.updateWorkloadUsage(log, wi, add)
 	if c.podsReadyTracking && !apimeta.IsStatusConditionTrue(w.Status.Conditions, kueue.WorkloadPodsReady) {

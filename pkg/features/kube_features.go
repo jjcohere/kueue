@@ -85,6 +85,12 @@ const (
 	// Enable the usage of batch.Job spec.managedBy field its MultiKueue integration.
 	MultiKueueBatchJobWithManagedBy featuregate.Feature = "MultiKueueBatchJobWithManagedBy"
 
+	// owner: @kevin85421
+	// issue: https://github.com/kubernetes-sigs/kueue/issues/14779
+	//
+	// Enables clearing ttlSecondsAfterFinished when creating remote batch Jobs.
+	MultiKueueBatchJobClearingTTLSecondsAfterFinishedOnWorkerCluster featuregate.Feature = "MultiKueueBatchJobClearingTTLSecondsAfterFinishedOnWorkerCluster"
+
 	// owner: @mimowo
 	//
 	// Enable Topology Aware Scheduling allowing to optimize placement of Pods
@@ -207,6 +213,13 @@ const (
 
 	// Deprecated: planned to be removed in 0.19. Use KueueDRAIntegrationExtendedResource instead.
 	DRAExtendedResources featuregate.Feature = "DRAExtendedResources"
+
+	// owner: @thc1006
+	//
+	// Refuse `pods` as a deviceClassMappings name or in a resource transformation.
+	// Releases through 0.18.6 accepted it, and refusing it calls os.Exit, so this
+	// branch holds the refusal until those entries are renamed.
+	ReservedResourceNameValidation featuregate.Feature = "ReservedResourceNameValidation"
 
 	// owner: @MaysaMacedo
 	// kep: https://github.com/kubernetes-sigs/kueue/tree/main/keps/7513-quota-check-strategy
@@ -332,6 +345,13 @@ const (
 	// issue: https://github.com/kubernetes-sigs/kueue/issues/9694
 	// Skip equivalent inadmissible workloads in BestEffortFIFO scheduling.
 	SchedulingEquivalenceHashing featuregate.Feature = "SchedulingEquivalenceHashing"
+
+	// owner: @venuchitta
+	//
+	// issue: https://github.com/kubernetes-sigs/kueue/issues/14534
+	// Exclude the PodSet name from the scheduling equivalence hash. Flavor assignment
+	// does not use the name, so including it splits otherwise equivalent Workloads.
+	SchedulingEquivalenceHashingIgnorePodSetName featuregate.Feature = "SchedulingEquivalenceHashingIgnorePodSetName"
 
 	// owner: @mbobrovskyi
 	//
@@ -624,6 +644,17 @@ const (
 	// validate an update if manageJobsWithoutQueueName is set or the new object carries a
 	// queue-name label.
 	ValidateRayAndSparkJobUpdates featuregate.Feature = "ValidateRayAndSparkJobUpdates"
+
+	// owner: @lightZebra
+	//
+	// pr: https://github.com/kubernetes-sigs/kueue/pull/14128
+	// Runs the first strategy again for fair preemption algorithm if DRS was decreased
+	// during processing. This allows to preempt more workloads if first run missed some
+	// candidates because of previously high DRS, preemptions are still fair.
+	//
+	// Note: This feature can be promoted to "beta" once https://github.com/kubernetes-sigs/kueue/issues/14543
+	// is fixed because it might boost chances for issue #14543 to appear.
+	FairSharingReevaluatePreemptionCandidates featuregate.Feature = "FairSharingReevaluatePreemptionCandidates"
 )
 
 func init() {
@@ -670,6 +701,9 @@ var defaultVersionedFeatureGates = map[featuregate.Feature]featuregate.Versioned
 		{Version: version.MustParse("0.8"), Default: false, PreRelease: featuregate.Alpha},
 		{Version: version.MustParse("0.15"), Default: true, PreRelease: featuregate.Beta},
 		{Version: version.MustParse("0.17"), Default: true, PreRelease: featuregate.GA, LockToDefault: true}, // remove in 0.19
+	},
+	MultiKueueBatchJobClearingTTLSecondsAfterFinishedOnWorkerCluster: {
+		{Version: version.MustParse("0.18"), Default: false, PreRelease: featuregate.Alpha},
 	},
 	TopologyAwareScheduling: {
 		{Version: version.MustParse("0.9"), Default: false, PreRelease: featuregate.Alpha},
@@ -747,6 +781,9 @@ var defaultVersionedFeatureGates = map[featuregate.Feature]featuregate.Versioned
 		{Version: version.MustParse("0.17"), Default: false, PreRelease: featuregate.Alpha},
 		{Version: version.MustParse("0.18"), Default: false, PreRelease: featuregate.Deprecated, LockToDefault: true}, // remove in 0.19
 	},
+	ReservedResourceNameValidation: {
+		{Version: version.MustParse("0.18"), Default: false, PreRelease: featuregate.Alpha},
+	},
 
 	KueueDRARejectWorkloadsWhenDRADisabled: {
 		{Version: version.MustParse("0.18"), Default: true, PreRelease: featuregate.Beta},
@@ -815,6 +852,9 @@ var defaultVersionedFeatureGates = map[featuregate.Feature]featuregate.Versioned
 	SchedulingEquivalenceHashing: {
 		{Version: version.MustParse("0.17"), Default: false, PreRelease: featuregate.Beta},
 		{Version: version.MustParse("0.18"), Default: true, PreRelease: featuregate.Beta},
+	},
+	SchedulingEquivalenceHashingIgnorePodSetName: {
+		{Version: version.MustParse("0.18"), Default: false, PreRelease: featuregate.Alpha},
 	},
 	SchedulerLongRequeueInterval: {
 		{Version: version.MustParse("0.17"), Default: false, PreRelease: featuregate.Alpha}, // remove in 0.20
@@ -952,6 +992,10 @@ var defaultVersionedFeatureGates = map[featuregate.Feature]featuregate.Versioned
 
 	ValidateRayAndSparkJobUpdates: {
 		{Version: version.MustParse("0.18"), Default: true, PreRelease: featuregate.Beta},
+	},
+
+	FairSharingReevaluatePreemptionCandidates: {
+		{Version: version.MustParse("0.18"), Default: false, PreRelease: featuregate.Alpha},
 	},
 }
 

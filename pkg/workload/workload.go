@@ -350,14 +350,19 @@ func (p *PodSetResources) ScaledTo(newCount int32) *PodSetResources {
 }
 
 func NewInfo(w *kueue.Workload, opts ...InfoOption) *Info {
+	return NewInfoWithLogger(klog.Background(), w, opts...)
+}
+
+// NewInfoWithLogger builds an Info, computing the scheduling hash with log.
+func NewInfoWithLogger(log logr.Logger, w *kueue.Workload, opts ...InfoOption) *Info {
 	info := &Info{}
-	info.Update(klog.Background(), w, opts...)
+	info.Update(log, w, opts...)
 	return info
 }
 
-// UpdateSchedulingHash computes and sets the scheduling hash using the
+// updateSchedulingHash computes and sets the scheduling hash using the
 // provided contextual logger. Called internally by Update.
-func (i *Info) UpdateSchedulingHash(log logr.Logger) {
+func (i *Info) updateSchedulingHash(log logr.Logger) {
 	i.SchedulingHash = computeSchedulingHash(log, i.Obj, i.TotalRequests)
 }
 
@@ -365,9 +370,57 @@ func (i *Info) UpdateSchedulingHash(log logr.Logger) {
 // recomputes the scheduling hash. Pass WithPreserveTotalRequests to skip
 // the TotalRequests rebuild (e.g., to retain DRA preprocessing on requeue).
 func (i *Info) Update(log logr.Logger, wl *kueue.Workload, opts ...InfoOption) {
+	prev := i.snapshotHashInputs()
 	i.Obj = wl
 	i.rebuildTotalRequests(opts...)
-	i.UpdateSchedulingHash(log)
+	if i.shouldUpdateSchedulingHash(prev) {
+		i.updateSchedulingHash(log)
+	}
+}
+
+// schedulingHashInputs is what an Info's SchedulingHash was computed from,
+// snapshotted before the Info is updated in place.
+type schedulingHashInputs struct {
+	hash     string
+	obj      *kueue.Workload
+	requests []PodSetResources
+}
+
+func (i *Info) snapshotHashInputs() schedulingHashInputs {
+	return schedulingHashInputs{hash: i.SchedulingHash, obj: i.Obj, requests: i.TotalRequests}
+}
+
+// shouldUpdateSchedulingHash reports whether prev's hash is missing or no longer
+// describes the Info. The effective requests are re-derived from cluster state,
+// so the Workload's version cannot vouch for them and both inputs are checked.
+func (i *Info) shouldUpdateSchedulingHash(prev schedulingHashInputs) bool {
+	return prev.hash == "" ||
+		!prev.sameWorkloadVersion(i.Obj) ||
+		!sameHashedRequests(prev.requests, i.TotalRequests)
+}
+
+// sameWorkloadVersion reports whether wl is the version the hash was computed
+// from. ResourceVersion covers the whole object, which is what the hash reads:
+// status and annotations included, not just the spec.
+func (p schedulingHashInputs) sameWorkloadVersion(wl *kueue.Workload) bool {
+	return p.obj != nil &&
+		p.obj.UID == wl.UID &&
+		p.obj.ResourceVersion != "" &&
+		p.obj.ResourceVersion == wl.ResourceVersion
+}
+
+// sameHashedRequests compares only what the scheduling shape is built from:
+// PodSetResources carries more fields than the hash reads.
+func sameHashedRequests(prev, current []PodSetResources) bool {
+	if len(prev) != len(current) {
+		return false
+	}
+	for i := range prev {
+		if prev[i].Count != current[i].Count || !resources.Equal(prev[i].Requests, current[i].Requests) {
+			return false
+		}
+	}
+	return true
 }
 
 // rebuildTotalRequests refreshes ClusterQueue and recomputes TotalRequests
@@ -409,14 +462,20 @@ func computeSchedulingHash(log logr.Logger, wl *kueue.Workload, totalRequests []
 			effectiveCount = totalRequests[i].Count
 			effectiveRequests = totalRequests[i].Requests
 		}
-		podSetShapes = append(podSetShapes, map[string]any{
-			"name":            ps.Name,
+		podSetShape := map[string]any{
 			"spec":            utilpod.SpecShape(&ps.Template.Spec),
 			"count":           effectiveCount,
 			"requests":        resources.ToMap(effectiveRequests),
 			"minCount":        ps.MinCount,
 			"topologyRequest": ps.TopologyRequest,
-		})
+		}
+		// The name identifies a PodSet but does not affect how it is assigned.
+		// Two readers depend on this shape: the queue's equivalence classes, and
+		// LastAssignment reuse through MatchesSchedulingShape.
+		if !features.Enabled(features.SchedulingEquivalenceHashingIgnorePodSetName) {
+			podSetShape["name"] = ps.Name
+		}
+		podSetShapes = append(podSetShapes, podSetShape)
 	}
 	shape := map[string]any{
 		"podSets":  podSetShapes,
@@ -714,6 +773,11 @@ func totalRequestsFromPodSets(wl *kueue.Workload, info *InfoOptions) []PodSetRes
 				}
 			}
 			// Then, add the DRA logical resources
+			//
+			// A producer must not emit corev1.ResourcePods here: claim charges use
+			// mapping names, which validation refuses under this gate, and the
+			// extended-resource path treats pods as native. A ClusterQueue that
+			// tracks the key has it overwritten with PodSet.Count at assignment.
 			if draRes, exists := info.preprocessedDRAResources[ps.Name]; exists {
 				for resName, quantity := range draRes {
 					q := effectiveRequests[resName]
@@ -1943,7 +2007,7 @@ func HasNoPriority(wl *kueue.Workload) bool {
 func prepareForEviction(w *kueue.Workload, now time.Time, reason, message string) {
 	SetEvictedCondition(w, now, reason, message)
 	resetClusterNomination(w)
-	resetChecksOnEviction(w, now)
+	ResetChecksOnEviction(w, now)
 	resetUnhealthyNodes(w)
 	unsetBlockedOnPreemptionGatesCondition(w, now, reason, message)
 	closeAllPreemptionGates(w, now)
