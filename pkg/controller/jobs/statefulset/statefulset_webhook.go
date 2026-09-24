@@ -85,7 +85,9 @@ func (wh *Webhook) Default(ctx context.Context, stsObj *appsv1.StatefulSet) erro
 	if err := jobframework.ApplyDefaultLocalQueueWithManagedJobsNamespaceSelector(ctx, wh.client, ss.Object(), wh.queues.DefaultLocalQueueExist, wh.managedJobsNamespaceSelector); err != nil {
 		return err
 	}
-	jobframework.ApplyDefaultWorkloadPriorityClass(ctx, wh.client, ss.Object())
+	if err := jobframework.ApplyDefaultWorkloadPriorityClassWithManagedJobsNamespaceSelector(ctx, wh.client, ss.Object(), wh.managedJobsNamespaceSelector); err != nil {
+		return err
+	}
 	suspend, err := jobframework.WorkloadShouldBeSuspended(
 		ctx,
 		ss.Object(),
@@ -128,6 +130,10 @@ func (wh *Webhook) ValidateCreate(ctx context.Context, stsObj *appsv1.StatefulSe
 
 	if features.Enabled(features.AdmissionGatedBy) {
 		allErrs = append(allErrs, webhook.ValidateAdmissionGatedByAnnotationOnCreate(sts.Object())...)
+	}
+
+	if features.Enabled(features.TopologyAwareScheduling) {
+		allErrs = append(allErrs, jobframework.ValidateTASPodSetRequest(specTemplatePath.Child("metadata"), &sts.Spec.Template.ObjectMeta)...)
 	}
 
 	return nil, allErrs.ToAggregate()
@@ -176,6 +182,10 @@ func (wh *Webhook) ValidateUpdate(ctx context.Context, oldSTSObj, newSTSObj *app
 
 	if features.Enabled(features.AdmissionGatedBy) {
 		allErrs = append(allErrs, webhook.ValidateAdmissionGatedByAnnotationOnUpdate(oldStatefulSet.Object(), newStatefulSet.Object())...)
+	}
+
+	if features.Enabled(features.TopologyAwareScheduling) {
+		allErrs = append(allErrs, jobframework.ValidateTASPodSetRequest(specTemplatePath.Child("metadata"), &newStatefulSet.Spec.Template.ObjectMeta)...)
 	}
 
 	suspend, err := jobframework.WorkloadShouldBeSuspended(

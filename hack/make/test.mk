@@ -61,7 +61,7 @@ E2E_USE_HELM ?= false
 E2E_MODE ?= ci
 E2E_SKIP_REINSTALL ?= false
 KUEUE_UPGRADE_FROM_VERSION ?= v0.14.8
-PROMETHEUS_OPERATOR_VERSION ?= v0.89.0
+PROMETHEUS_OPERATOR_VERSION ?= $(shell grep '^FROM' "${TESTING_DIR}/prometheus-operator/Dockerfile" | cut -d: -f2 | cut -d@ -f1)
 # When truthy, force re-installing external operators (MPI, Ray, etc.) on each run, even in E2E_MODE=dev.
 E2E_ENFORCE_OPERATOR_UPDATE ?= false
 
@@ -281,6 +281,7 @@ test-e2e-extended-shard-2: setup-e2e-env run-test-e2e-extended-$(E2E_KIND_VERSIO
 ##
 ## Examples:
 ##   Run only job tests: GINKGO_ARGS="--label-filter=feature:job" make test-e2e-baseline
+##   Run only provisioning tests: GINKGO_ARGS="--label-filter=feature:provisioning" make test-e2e-baseline
 .PHONY: test-e2e-baseline
 test-e2e-baseline: E2E_NPROCS := 4
 test-e2e-baseline: setup-e2e-env kueuectl run-test-e2e-baseline-$(E2E_KIND_VERSION:kindest/node:v%=%)
@@ -307,6 +308,68 @@ test-tas-e2e-baseline-helm: test-tas-e2e-baseline
 test-tas-e2e-extended-helm: E2E_USE_HELM=true
 test-tas-e2e-extended-helm: test-tas-e2e-extended
 
+# Aliases for TAS e2e tests
+.PHONY: test-e2e-tas-baseline
+test-e2e-tas-baseline: test-tas-e2e-baseline
+
+.PHONY: test-e2e-tas-extended
+test-e2e-tas-extended: test-tas-e2e-extended
+
+.PHONY: test-e2e-tas-extended-shard-0
+test-e2e-tas-extended-shard-0: test-tas-e2e-extended-shard-0
+
+.PHONY: test-e2e-tas-extended-shard-1
+test-e2e-tas-extended-shard-1: test-tas-e2e-extended-shard-1
+
+.PHONY: test-e2e-tas-baseline-helm
+test-e2e-tas-baseline-helm: test-tas-e2e-baseline-helm
+
+.PHONY: test-e2e-tas-extended-helm
+test-e2e-tas-extended-helm: test-tas-e2e-extended-helm
+
+# WAS versions of TAS e2e tests
+.PHONY: test-e2e-was-tas-baseline
+test-e2e-was-tas-baseline: WAS_ENABLED=true
+test-e2e-was-tas-baseline: test-tas-e2e-baseline
+
+.PHONY: test-e2e-was-tas-extended
+test-e2e-was-tas-extended: WAS_ENABLED=true
+test-e2e-was-tas-extended: test-tas-e2e-extended
+
+.PHONY: test-e2e-was-tas-extended-shard-0
+test-e2e-was-tas-extended-shard-0: WAS_ENABLED=true
+test-e2e-was-tas-extended-shard-0: test-tas-e2e-extended-shard-0
+
+.PHONY: test-e2e-was-tas-extended-shard-1
+test-e2e-was-tas-extended-shard-1: WAS_ENABLED=true
+test-e2e-was-tas-extended-shard-1: test-tas-e2e-extended-shard-1
+
+.PHONY: test-e2e-was-tas-baseline-helm
+test-e2e-was-tas-baseline-helm: WAS_ENABLED=true
+test-e2e-was-tas-baseline-helm: test-tas-e2e-baseline-helm
+
+.PHONY: test-e2e-was-tas-extended-helm
+test-e2e-was-tas-extended-helm: WAS_ENABLED=true
+test-e2e-was-tas-extended-helm: test-tas-e2e-extended-helm
+
+# Backwards compatibility aliases for CI/Prow
+.PHONY: test-tas-was-e2e-baseline
+test-tas-was-e2e-baseline: test-e2e-was-tas-baseline
+
+.PHONY: test-tas-was-e2e-extended
+test-tas-was-e2e-extended: test-e2e-was-tas-extended
+
+.PHONY: test-tas-was-e2e-extended-shard-0
+test-tas-was-e2e-extended-shard-0: test-e2e-was-tas-extended-shard-0
+
+.PHONY: test-tas-was-e2e-extended-shard-1
+test-tas-was-e2e-extended-shard-1: test-e2e-was-tas-extended-shard-1
+
+.PHONY: test-tas-was-e2e-baseline-helm
+test-tas-was-e2e-baseline-helm: test-e2e-was-tas-baseline-helm
+
+.PHONY: test-tas-was-e2e-extended-helm
+test-tas-was-e2e-extended-helm: test-e2e-was-tas-extended-helm
 .PHONY: test-e2e-certmanager
 test-e2e-certmanager: setup-e2e-env run-test-e2e-certmanager-$(E2E_KIND_VERSION:kindest/node:v%=%)
 
@@ -445,7 +508,7 @@ run-test-tas-e2e-baseline-%:
 		E2E_MODE=$(E2E_MODE) \
 		E2E_SKIP_REINSTALL=$(E2E_SKIP_REINSTALL) \
 		E2E_ENFORCE_OPERATOR_UPDATE=$(E2E_ENFORCE_OPERATOR_UPDATE) \
-		KIND_CLUSTER_FILE="kind-cluster-tas.yaml" E2E_TARGET_FOLDER="tas/baseline" \
+		KIND_CLUSTER_FILE="kind-cluster-tas.yaml" E2E_TARGET_FOLDER="singlecluster/tasapi/baseline" \
 		E2E_CONFIG_FOLDER="baseline" \
 		TEST_LOG_LEVEL=$(TEST_LOG_LEVEL) \
 		E2E_RUN_ONLY_ENV=$(E2E_RUN_ONLY_ENV) \
@@ -461,7 +524,7 @@ run-test-tas-e2e-extended-%:
 		E2E_SKIP_REINSTALL=$(E2E_SKIP_REINSTALL) \
 		E2E_ENFORCE_OPERATOR_UPDATE=$(E2E_ENFORCE_OPERATOR_UPDATE) \
 		USE_RAY_FOR_TESTS=$(USE_RAY_FOR_TESTS) \
-		KIND_CLUSTER_FILE="kind-cluster-tas.yaml" E2E_TARGET_FOLDER="tas/extended" \
+		KIND_CLUSTER_FILE="kind-cluster-tas.yaml" E2E_TARGET_FOLDER="singlecluster/tasapi/extended" \
 		E2E_CONFIG_FOLDER="extended" \
 		TEST_LOG_LEVEL=$(TEST_LOG_LEVEL) \
 		E2E_RUN_ONLY_ENV=$(E2E_RUN_ONLY_ENV) \
@@ -609,7 +672,7 @@ run-test-e2e-multikueue-sequential-%:
 # Run e2e tests against k/k main (latest CI build) with WAS enabled
 K8S_MAIN_NODE_IMAGE ?= k8s-main:latest
 .PHONY: test-e2e-k8s-main-was
-test-e2e-k8s-main-was: setup-e2e-env kueuectl kind-k8s-main-image-build run-test-e2e-k8s-main-was
+test-e2e-k8s-main-was: setup-e2e-env kueuectl kind-k8s-main-image-build run-test-e2e-k8s-main-was-baseline run-test-e2e-k8s-main-was-extended
 
 .PHONY: kind-k8s-main-image-build
 kind-k8s-main-image-build: kind
@@ -619,9 +682,15 @@ kind-k8s-main-image-build: kind
 	$(KIND) build node-image --image=$(K8S_MAIN_NODE_IMAGE) \
 		"https://dl.k8s.io/ci/$(K8S_CI_VERSION)/kubernetes-server-linux-$(shell go env GOARCH).tar.gz"
 
-.PHONY: run-test-e2e-k8s-main-was
-run-test-e2e-k8s-main-was:
-	@echo Running e2e for k8s main with WAS enabled
+# The filter names every feature of the extended suite, because e2e-common.sh
+# installs an operator only when there is no label filter or the filter names its feature.
+run-test-e2e-k8s-main-was-extended: GINKGO_ARGS = --label-filter='(feature:appwrapper || feature:jaxjob || feature:jobset || feature:kuberay || feature:leaderworkerset || feature:pytorchjob || feature:trainjob)$(FULLRAY_EXCLUDE)'
+
+# This branch has no singlecluster/wasapi suite, so the lane runs the regular
+# singlecluster suites with WAS enabled. e2e-test.sh takes a single target folder,
+# and singlecluster/ also holds tasapi, which needs kind-cluster-tas.yaml.
+run-test-e2e-k8s-main-was-%:
+	@echo Running $* e2e for k8s main with WAS enabled
 	E2E_KIND_VERSION="$(K8S_MAIN_NODE_IMAGE)" KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) \
 		ARTIFACTS="$(ARTIFACTS)/$@" IMAGE_TAG=$(IMAGE_TAG) GINKGO_ARGS="$(E2E_GINKGO_ARGS)" \
 		E2E_MODE=$(E2E_MODE) \
@@ -633,9 +702,41 @@ run-test-e2e-k8s-main-was:
 		LEADERWORKERSET_VERSION=$(LEADERWORKERSET_VERSION) \
 		KUBERAY_VERSION=$(KUBERAY_VERSION) RAY_VERSION=$(RAY_VERSION) RAYMINI_VERSION=$(RAYMINI_VERSION) USE_RAY_FOR_TESTS=$(USE_RAY_FOR_TESTS) \
 		PROMETHEUS_OPERATOR_VERSION=$(PROMETHEUS_OPERATOR_VERSION) \
-		KIND_CLUSTER_FILE="kind-cluster.yaml" E2E_TARGET_FOLDER="singlecluster" \
+		KIND_CLUSTER_FILE="kind-cluster.yaml" E2E_TARGET_FOLDER="singlecluster/$*" \
 		TEST_LOG_LEVEL=$(TEST_LOG_LEVEL) \
 		E2E_RUN_ONLY_ENV=$(E2E_RUN_ONLY_ENV) \
+		E2E_USE_HELM=$(E2E_USE_HELM) \
+		WAS_ENABLED=true \
+		./hack/testing/e2e-test.sh
+
+# Complements test-e2e-k8s-main-was: that lane tracks k/k main for early warning,
+# this one pins a release to develop WAS features against a stable target.
+# The suite needs an API server that serves scheduling.k8s.io/v1beta1, so the lane
+# defaults to 1.37 instead of the repo-wide default, while still following
+# E2E_K8S_VERSION when a caller picks a version.
+ifeq ($(origin E2E_K8S_VERSION),file)
+E2E_WAS_K8S_VERSION := 1.37
+else
+E2E_WAS_K8S_VERSION := $(E2E_K8S_VERSION)
+endif
+E2E_WAS_K8S_FULL_VERSION := $(or $(filter $(E2E_WAS_K8S_VERSION).%,$(E2E_K8S_VERSIONS)),$(E2E_WAS_K8S_VERSION).0)
+
+.PHONY: test-e2e-was-api
+test-e2e-was-api: setup-e2e-env run-test-e2e-was-api-$(E2E_WAS_K8S_FULL_VERSION) ## Run the WAS API e2e test suite on a kind cluster of a released Kubernetes version (follows E2E_K8S_VERSION, defaults to 1.37).
+
+# Backwards compatibility alias for CI/Prow
+.PHONY: test-e2e-was
+test-e2e-was: test-e2e-was-api
+
+run-test-e2e-was-api-%: K8S_VERSION = $(@:run-test-e2e-was-api-%=%)
+run-test-e2e-was-api-%:
+	@echo Running WAS API e2e for k8s ${K8S_VERSION}
+	E2E_KIND_VERSION="kindest/node:v$(K8S_VERSION)" KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME) \
+		ARTIFACTS="$(ARTIFACTS)/$@" IMAGE_TAG=$(IMAGE_TAG) GINKGO_ARGS="$(E2E_GINKGO_ARGS)" \
+		E2E_MODE=$(E2E_MODE) \
+		E2E_SKIP_REINSTALL=$(E2E_SKIP_REINSTALL) \
+		KIND_CLUSTER_FILE="kind-cluster.yaml" E2E_TARGET_FOLDER="singlecluster/wasapi" \
+		TEST_LOG_LEVEL=$(TEST_LOG_LEVEL) \
 		E2E_USE_HELM=$(E2E_USE_HELM) \
 		WAS_ENABLED=true \
 		./hack/testing/e2e-test.sh

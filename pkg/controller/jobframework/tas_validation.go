@@ -125,10 +125,18 @@ func ValidateTASPodSetRequest(replicaPath *field.Path, replicaMetadata *metav1.O
 
 func validateTASUnconstrained(annotationsPath *field.Path, replicaMetadata *metav1.ObjectMeta) field.ErrorList {
 	if val, ok := replicaMetadata.Annotations[kueue.PodSetUnconstrainedTopologyAnnotation]; ok {
-		if _, err := strconv.ParseBool(val); err != nil {
+		unconstrained, err := strconv.ParseBool(val)
+		if err != nil {
 			return field.ErrorList{
 				field.Invalid(
 					annotationsPath.Key(kueue.PodSetUnconstrainedTopologyAnnotation), val, "must be a boolean value",
+				),
+			}
+		}
+		if !unconstrained && features.Enabled(features.TASRejectFalseUnconstrainedTopology) {
+			return field.ErrorList{
+				field.Invalid(
+					annotationsPath.Key(kueue.PodSetUnconstrainedTopologyAnnotation), val, "must be true",
 				),
 			}
 		}
@@ -233,6 +241,16 @@ func ValidateSliceSizeAnnotationUpperBound(replicaPath *field.Path, replicaMetad
 					annotationsPath.Key(kueue.PodSetSliceRequiredTopologyConstraintsAnnotation),
 					constraints[0].Size,
 					fmt.Sprintf("must not be greater than pod set count %d", podSet.Count),
+				))
+			} else if features.Enabled(features.TASPartialSlices) && len(constraints) > 1 &&
+				constraints[0].Size > 0 && podSet.Count%constraints[0].Size != 0 {
+				// A partial last slice is supported for a single layer only.
+				// The inner layers subdivide a slice further, and the trailing
+				// pods generally do not divide by their sizes.
+				allErrs = append(allErrs, field.Invalid(
+					annotationsPath.Key(kueue.PodSetSliceRequiredTopologyConstraintsAnnotation),
+					constraints[0].Size,
+					fmt.Sprintf("must evenly divide pod set count %d when more than one layer is specified", podSet.Count),
 				))
 			}
 		}
