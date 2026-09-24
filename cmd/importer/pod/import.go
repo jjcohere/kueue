@@ -43,11 +43,9 @@ var realClock = clock.RealClock{}
 
 func Import(ctx context.Context, c client.Client, importCache *cache.ImportCache, jobs uint) error {
 	ch := make(chan corev1.Pod)
+	listErrCh := make(chan error, 1)
 	go func() {
-		err := ListPods(ctx, c, importCache.Namespaces, ch)
-		if err != nil {
-			ctrl.LoggerFrom(ctx).Error(err, "Listing pods")
-		}
+		listErrCh <- ListPods(ctx, c, importCache.Namespaces, ch)
 	}()
 	summary := ProcessConcurrently(ch, jobs, func(p *corev1.Pod) (bool, error) {
 		log := ctrl.LoggerFrom(ctx).WithValues("pod", klog.KObj(p))
@@ -92,7 +90,7 @@ func Import(ctx context.Context, c client.Client, importCache *cache.ImportCache
 	for e, pods := range summary.ErrorsForPods {
 		log.Info("Import failed for Pods", "err", e, "occurrences", len(pods), "observedFirstIn", pods[0])
 	}
-	return errors.Join(summary.Errors...)
+	return errors.Join(append(summary.Errors, <-listErrCh)...)
 }
 
 func checkError(err error) (retry, reload bool, timeout time.Duration) {
@@ -198,7 +196,7 @@ func admitWorkload(
 	workloadInfoOptions []workload.InfoOption,
 ) error {
 	update := func(wl *kueue.Workload) (bool, error) {
-		info := workload.NewInfoWithLogger(ctrl.LoggerFrom(ctx), wl, workloadInfoOptions...)
+		info := workload.NewInfo(ctrl.LoggerFrom(ctx), wl, workloadInfoOptions...)
 		admission := kueue.Admission{
 			ClusterQueue: kueue.ClusterQueueReference(cq.Name),
 			PodSetAssignments: []kueue.PodSetAssignment{

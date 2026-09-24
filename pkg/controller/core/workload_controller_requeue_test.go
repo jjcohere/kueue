@@ -28,8 +28,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	kueue "sigs.k8s.io/kueue/apis/kueue/v1beta2"
+	"sigs.k8s.io/kueue/pkg/resources"
 	utiltesting "sigs.k8s.io/kueue/pkg/util/testing"
 	utiltestingapi "sigs.k8s.io/kueue/pkg/util/testing/v1beta2"
+	"sigs.k8s.io/kueue/pkg/workload"
 )
 
 func TestReconcileRequeue(t *testing.T) {
@@ -703,6 +705,31 @@ func TestReconcileRequeue(t *testing.T) {
 				}).
 				Obj(),
 			wantResult: reconcile.Result{},
+		},
+		"requeue after backoff accounts for the effective cpu request": {
+			cq: utiltestingapi.MakeClusterQueue("cq").Obj(),
+			lq: utiltestingapi.MakeLocalQueue("lq", "ns").ClusterQueue("cq").Obj(),
+			workload: utiltestingapi.MakeWorkload("wl", "ns").
+				Queue("lq").
+				Active(true).
+				Limit(corev1.ResourceCPU, "3").
+				RequeueState(new(int32(1)), new(metav1.NewTime(now.Add(-time.Minute)))).
+				Obj(),
+			wantPendingWorkloads: map[kueue.ClusterQueueReference]map[workload.Reference]*workload.Info{
+				"cq": {
+					"ns/wl": {
+						TotalRequests: []workload.PodSetResources{
+							{
+								Name:  kueue.DefaultPodSetName,
+								Count: 1,
+								Requests: resources.NewRequestsFromMap(map[corev1.ResourceName]int64{
+									corev1.ResourceCPU: 3000,
+								}),
+							},
+						},
+					},
+				},
+			},
 		},
 		"should use the biggest total time not the biggest RequeueAfterSeconds": {
 			workload: utiltestingapi.MakeWorkload("wl", "ns").

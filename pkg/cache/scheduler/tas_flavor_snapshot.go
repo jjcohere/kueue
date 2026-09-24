@@ -256,6 +256,20 @@ func (s *TASFlavorSnapshot) addTASUsageForHeldDomains(usages map[utiltas.Topolog
 	}
 }
 
+// updateTASUsageForHeldDomains applies the requests only to the domains this
+// snapshot has a leaf for. An overlapping flavor holds only some of them, so an
+// unheld domain must not reach the skip report in addTASUsage and
+// removeTASUsage, which means the backing node went away.
+func (s *TASFlavorSnapshot) updateTASUsageForHeldDomains(usage workload.TASFlavorUsage, op usageOp) {
+	for _, tr := range usage {
+		domainID := utiltas.DomainID(tr.Values)
+		if !s.hasDomain(domainID) {
+			continue
+		}
+		s.updateTASUsage(domainID, tr.TotalRequests(), op, tr.Count)
+	}
+}
+
 func (s *TASFlavorSnapshot) addTASUsage(domainID utiltas.TopologyDomainID, usage resources.Requests) {
 	if s.leaves[domainID] == nil {
 		// this can happen if there is an admitted workload for which the
@@ -576,7 +590,8 @@ func (s *TASFlavorSnapshot) FindTopologyAssignmentsForFlavor(log logr.Logger, fl
 
 	for _, groupKey := range groupsOrder {
 		trs := groupedTASRequests[groupKey]
-		if workload.HasUnhealthyNodes(opts.workload) {
+		// Without an admission there is nothing to replace; take the fresh-placement path.
+		if workload.HasUnhealthyNodes(opts.workload) && opts.workload.Status.Admission != nil {
 			for _, tr := range trs {
 				// In case of looking for Node replacement, TopologyRequest has only
 				// PodSets with the Node to replace, so we match PodSetAssignment
@@ -675,10 +690,10 @@ func (s *TASFlavorSnapshot) findReplacementAssignment(
 		effectiveSliceSize := int32(1)
 		var effectiveSliceTopology *string
 		constraints := tr.PodSet.TopologyRequest.PodsetSliceRequiredTopologyConstraints
-		for i := len(constraints) - 1; i >= 0; i-- {
-			if tr.Count%constraints[i].Size == 0 {
-				effectiveSliceSize = constraints[i].Size
-				effectiveSliceTopology = new(constraints[i].Topology)
+		for _, v := range slices.Backward(constraints) {
+			if tr.Count%v.Size == 0 {
+				effectiveSliceSize = v.Size
+				effectiveSliceTopology = new(v.Topology)
 				break
 			}
 		}
@@ -747,9 +762,9 @@ func (s *TASFlavorSnapshot) requiredReplacementDomain(tr *TASPodSetRequests, ta 
 		// that needs repair, preserving intermediate grouping invariants.
 		constraints := tr.PodSet.TopologyRequest.PodsetSliceRequiredTopologyConstraints
 		if len(constraints) > 1 {
-			for i := len(constraints) - 1; i >= 0; i-- {
-				if tr.Count%constraints[i].Size != 0 {
-					return s.findIncompleteSliceDomain(tr, ta, tr.Count, constraints[i].Size, constraints[i].Topology)
+			for _, v := range slices.Backward(constraints) {
+				if tr.Count%v.Size != 0 {
+					return s.findIncompleteSliceDomain(tr, ta, tr.Count, v.Size, v.Topology)
 				}
 			}
 		}

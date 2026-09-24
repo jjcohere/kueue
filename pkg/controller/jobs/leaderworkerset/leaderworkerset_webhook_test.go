@@ -411,7 +411,10 @@ func TestValidateCreate(t *testing.T) {
 					Key("kueue.x-k8s.io/podset-slice-size"), "must be set when 'kueue.x-k8s.io/podset-slice-required-topology' is specified"),
 			}.ToAggregate(),
 		},
-		"invalid slice topology request - grouping requested together with slicing": {
+		"valid slice topology request - grouping requested together with slicing": {
+			featureGates: map[featuregate.Feature]bool{
+				features.TASGroupedPodSetSlicing: true,
+			},
 			lws: testingleaderworkerset.MakeLeaderWorkerSet("test-lws", "").
 				Queue("test-queue").
 				LeaderTemplate(corev1.PodTemplateSpec{
@@ -436,16 +439,33 @@ func TestValidateCreate(t *testing.T) {
 					},
 				}).
 				Obj(),
-			wantErr: field.ErrorList{
-				field.Forbidden(field.NewPath("spec.leaderWorkerTemplate.leaderTemplate.metadata.annotations").
-					Key("kueue.x-k8s.io/podset-group-name"), "may not be set when 'kueue.x-k8s.io/podset-slice-size' is specified"),
-				field.Forbidden(field.NewPath("spec.leaderWorkerTemplate.leaderTemplate.metadata.annotations").
-					Key("kueue.x-k8s.io/podset-group-name"), "may not be set when 'kueue.x-k8s.io/podset-slice-required-topology' is specified"),
-				field.Forbidden(field.NewPath("spec.leaderWorkerTemplate.workerTemplate.metadata.annotations").
-					Key("kueue.x-k8s.io/podset-group-name"), "may not be set when 'kueue.x-k8s.io/podset-slice-size' is specified"),
-				field.Forbidden(field.NewPath("spec.leaderWorkerTemplate.workerTemplate.metadata.annotations").
-					Key("kueue.x-k8s.io/podset-group-name"), "may not be set when 'kueue.x-k8s.io/podset-slice-required-topology' is specified"),
-			}.ToAggregate(),
+		},
+		"valid slice topology request - grouping with unsliced leader and sliced workers": {
+			featureGates: map[featuregate.Feature]bool{
+				features.TASGroupedPodSetSlicing: true,
+			},
+			lws: testingleaderworkerset.MakeLeaderWorkerSet("test-lws", "").
+				Queue("test-queue").
+				LeaderTemplate(corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{
+						Annotations: map[string]string{
+							kueue.PodSetGroupName:                  "groupname",
+							kueue.PodSetRequiredTopologyAnnotation: "cloud.com/block",
+						},
+					},
+				}).
+				Size(5).
+				WorkerTemplate(corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{
+						Annotations: map[string]string{
+							kueue.PodSetGroupName:                       "groupname",
+							kueue.PodSetRequiredTopologyAnnotation:      "cloud.com/block",
+							kueue.PodSetSliceRequiredTopologyAnnotation: "cloud.com/rack",
+							kueue.PodSetSliceSizeAnnotation:             "2",
+						},
+					},
+				}).
+				Obj(),
 		},
 		"valid PodSet group name request": {
 			lws: testingleaderworkerset.MakeLeaderWorkerSet("test-lws", "").
@@ -468,6 +488,34 @@ func TestValidateCreate(t *testing.T) {
 				}).
 				Obj(),
 			wantErr: nil,
+		},
+		"invalid PodSet group name request - pod-index-offset set alongside podset-group-name": {
+			lws: testingleaderworkerset.MakeLeaderWorkerSet("test-lws", "").
+				Queue("test-queue").
+				LeaderTemplate(corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{
+						Annotations: map[string]string{
+							kueue.PodSetGroupName:                  "groupname",
+							kueue.PodSetRequiredTopologyAnnotation: "cloud.com/block",
+						},
+					},
+				}).
+				WorkerTemplate(corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{
+						Annotations: map[string]string{
+							kueue.PodSetGroupName:                  "groupname",
+							kueue.PodSetRequiredTopologyAnnotation: "cloud.com/block",
+							kueue.PodIndexOffsetAnnotation:         "1",
+						},
+					},
+				}).
+				Obj(),
+			wantErr: field.ErrorList{
+				&field.Error{
+					Type:  field.ErrorTypeForbidden,
+					Field: "spec.leaderWorkerTemplate.workerTemplate.metadata.annotations[kueue.x-k8s.io/pod-index-offset]",
+				},
+			}.ToAggregate(),
 		},
 		"invalid PodSet group name request - value is a number": {
 			lws: testingleaderworkerset.MakeLeaderWorkerSet("test-lws", "").

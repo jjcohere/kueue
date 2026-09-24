@@ -113,6 +113,12 @@
     lockToDefault: false
     preRelease: Alpha
     version: "0.17"
+- name: FinalizeTerminatingPodGroups
+  versionedSpecs:
+  - default: false
+    lockToDefault: false
+    preRelease: Alpha
+    version: "0.18"
 - name: FinishOrphanedWorkloads
   versionedSpecs:
   - default: true
@@ -314,6 +320,12 @@
   - default: true
     lockToDefault: false
     preRelease: Beta
+    version: "0.18"
+- name: MultiKueueReuseClientConnectionConfigForWorkers
+  versionedSpecs:
+  - default: false
+    lockToDefault: false
+    preRelease: Alpha
     version: "0.18"
 - name: MultiKueueWaitForWorkloadAdmitted
   versionedSpecs:
@@ -535,6 +547,12 @@
     lockToDefault: false
     preRelease: Beta
     version: "0.14"
+- name: TASGroupedPodSetSlicing
+  versionedSpecs:
+  - default: false
+    lockToDefault: false
+    preRelease: Alpha
+    version: "0.18"
 - name: TASHandleOverlappingFlavors
   versionedSpecs:
   - default: true

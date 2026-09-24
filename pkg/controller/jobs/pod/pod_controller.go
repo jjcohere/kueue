@@ -674,25 +674,25 @@ func getRoleHash(p corev1.Pod) (string, error) {
 }
 
 // Load loads all pods in the group
-func (p *Pod) Load(ctx context.Context, c client.Client, key *types.NamespacedName) (removeFinalizers bool, err error) {
+func (p *Pod) Load(ctx context.Context, c client.Client, key *types.NamespacedName) (*jobframework.LoadResult, error) {
 	nsKey := strings.Split(key.Namespace, "/")
 
 	if len(nsKey) == 1 {
 		if err := c.Get(ctx, *key, &p.pod); err != nil {
 			if client.IgnoreNotFound(err) != nil {
-				return false, err
+				return nil, err
 			}
-			return true, nil
+			return jobframework.NewLoadResult(true, false), nil
 		}
 		p.isFound = true
 
 		// If the key.Namespace doesn't contain a "group/" prefix, even though
 		// the pod has a group name, there's something wrong with the event handler.
 		if groupName := GetPodGroupName(&p.pod); groupName != "" {
-			return false, errIncorrectReconcileRequest
+			return nil, errIncorrectReconcileRequest
 		}
 
-		return !p.pod.DeletionTimestamp.IsZero(), nil
+		return jobframework.NewLoadResult(!p.pod.DeletionTimestamp.IsZero(), true), nil
 	}
 
 	p.isGroup = true
@@ -707,18 +707,39 @@ func (p *Pod) Load(ctx context.Context, c client.Client, key *types.NamespacedNa
 	if err := c.List(ctx, &p.list, client.MatchingFields{
 		PodGroupNameCacheKey: key.Name,
 	}, client.InNamespace(key.Namespace)); err != nil {
-		return false, err
+		return nil, err
 	}
 
 	if len(p.list.Items) > 0 {
 		p.isFound = true
 		p.pod = p.list.Items[0]
-		key.Name = p.pod.Name
 	}
 
 	// If none of the pods in group are found,
 	// the respective workload should be finalized
-	return !p.isFound, nil
+	if !p.isFound {
+		return jobframework.NewLoadResult(true, false), nil
+	}
+
+	if features.Enabled(features.FinalizeTerminatingPodGroups) {
+		// All group pods are terminating: once no Workload remains, finalize directly - re-creating one would re-adopt the group from admission-mutated specs and wedge finalizer removal (issue #15148).
+		for i := range p.list.Items {
+			if p.list.Items[i].DeletionTimestamp.IsZero() {
+				return jobframework.NewLoadResult(false, p.isFound), nil
+			}
+		}
+		// Any Workload still existing under the group name (even foreign-owned) blocks finalizing the group.
+		wl := &kueue.Workload{}
+		if err := c.Get(ctx, client.ObjectKey{Namespace: p.key.Namespace, Name: p.key.Name}, wl); err == nil {
+			return jobframework.NewLoadResult(false, p.isFound), nil
+		} else if !apierrors.IsNotFound(err) {
+			return nil, err
+		}
+		ctrl.LoggerFrom(ctx).V(2).Info("All pod group members are terminating and no Workload remains; treating the pod group as terminating")
+		return jobframework.NewLoadResult(true, p.isFound), nil
+	}
+
+	return jobframework.NewLoadResult(false, p.isFound), nil
 }
 
 // fastAdmission determines if the pod is configured for fast admission based on specific annotations.
@@ -946,8 +967,8 @@ func sortInactivePods(clock clock.Clock, inactivePods []corev1.Pod) {
 		return cmputil.LazyOr(
 			func() int {
 				return cmputil.CompareBool(
-					slices.Contains(pi.Finalizers, podconstants.PodFinalizer),
 					slices.Contains(pj.Finalizers, podconstants.PodFinalizer),
+					slices.Contains(pi.Finalizers, podconstants.PodFinalizer),
 				)
 			},
 			func() int {
@@ -971,15 +992,15 @@ func sortActivePods(activePods []corev1.Pod) {
 			func() int {
 				// Prefer to keep pods that have a finalizer.
 				return cmputil.CompareBool(
-					slices.Contains(pi.Finalizers, podconstants.PodFinalizer),
 					slices.Contains(pj.Finalizers, podconstants.PodFinalizer),
+					slices.Contains(pi.Finalizers, podconstants.PodFinalizer),
 				)
 			},
 			func() int {
 				// Prefer to keep pods that aren't gated.
 				return cmputil.CompareBool(
-					isGated(&pj),
 					isGated(&pi),
+					isGated(&pj),
 				)
 			},
 			func() int {

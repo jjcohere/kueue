@@ -24,7 +24,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-logr/logr"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	corev1 "k8s.io/api/core/v1"
@@ -390,6 +389,145 @@ func TestNewInfo(t *testing.T) {
 									"networking.example.com/vpc": 1,
 								}),
 								Count: 2,
+							}},
+						},
+					},
+				},
+			},
+		},
+		"admitted with TAS and completed podSet scales count and requests to zero": {
+			workload: *utiltestingapi.MakeWorkload("tas", "").
+				PodSets(
+					*utiltestingapi.MakePodSet("driver", 1).
+						Request(corev1.ResourceCPU, "1").
+						RequiredTopologyRequest(corev1.LabelHostname).
+						Obj(),
+					*utiltestingapi.MakePodSet("workers", 2).
+						Request(corev1.ResourceCPU, "1").
+						RequiredTopologyRequest(corev1.LabelHostname).
+						Obj(),
+				).
+				ReserveQuotaAt(
+					utiltestingapi.MakeAdmission("tas-cq").
+						PodSets(
+							utiltestingapi.MakePodSetAssignment("driver").
+								Assignment(corev1.ResourceCPU, "tas", "1").
+								Count(1).
+								TopologyAssignment(utiltestingapi.MakeTopologyAssignment([]string{corev1.LabelHostname}).
+									Domains(utiltestingapi.MakeTopologyDomainAssignment([]string{"node-a"}, 1).Obj()).
+									Obj()).
+								Obj(),
+							utiltestingapi.MakePodSetAssignment("workers").
+								Assignment(corev1.ResourceCPU, "tas", "2").
+								Count(2).
+								TopologyAssignment(utiltestingapi.MakeTopologyAssignment([]string{corev1.LabelHostname}).
+									Domains(utiltestingapi.MakeTopologyDomainAssignment([]string{"node-b"}, 2).Obj()).
+									Obj()).
+								Obj(),
+						).
+						Obj(), now,
+				).
+				ReclaimablePods(
+					kueue.ReclaimablePod{
+						Name:  "workers",
+						Count: 2,
+					},
+				).
+				Obj(),
+			wantInfo: Info{
+				ClusterQueue: "tas-cq",
+				TotalRequests: []PodSetResources{
+					{
+						Name: "driver",
+						Flavors: map[corev1.ResourceName]kueue.ResourceFlavorReference{
+							corev1.ResourceCPU: "tas",
+						},
+						Requests: resources.NewRequestsFromMap(map[corev1.ResourceName]int64{
+							corev1.ResourceCPU: 1000,
+						}),
+						Count: 1,
+						TopologyRequest: &TopologyRequest{
+							Levels: []string{corev1.LabelHostname},
+							DomainRequests: []TopologyDomainRequests{{
+								Values: []string{"node-a"},
+								SinglePodRequests: resources.NewRequestsFromMap(map[corev1.ResourceName]int64{
+									corev1.ResourceCPU: 1000,
+								}),
+								Count: 1,
+							}},
+						},
+					},
+					{
+						Name: "workers",
+						Flavors: map[corev1.ResourceName]kueue.ResourceFlavorReference{
+							corev1.ResourceCPU: "tas",
+						},
+						Requests: resources.NewRequestsFromMap(map[corev1.ResourceName]int64{
+							corev1.ResourceCPU: 0,
+						}),
+						Count: 0,
+						TopologyRequest: &TopologyRequest{
+							Levels: []string{corev1.LabelHostname},
+							DomainRequests: []TopologyDomainRequests{{
+								Values: []string{"node-b"},
+								SinglePodRequests: resources.NewRequestsFromMap(map[corev1.ResourceName]int64{
+									corev1.ResourceCPU: 1000,
+								}),
+								Count: 2,
+							}},
+						},
+					},
+				},
+			},
+		},
+		"admitted with TAS and partially completed podSet preserves topology request": {
+			workload: *utiltestingapi.MakeWorkload("tas", "").
+				PodSets(
+					*utiltestingapi.MakePodSet("workers", 4).
+						Request(corev1.ResourceCPU, "1").
+						RequiredTopologyRequest(corev1.LabelHostname).
+						Obj(),
+				).
+				ReserveQuotaAt(
+					utiltestingapi.MakeAdmission("tas-cq").
+						PodSets(
+							utiltestingapi.MakePodSetAssignment("workers").
+								Assignment(corev1.ResourceCPU, "tas", "4").
+								Count(4).
+								TopologyAssignment(utiltestingapi.MakeTopologyAssignment([]string{corev1.LabelHostname}).
+									Domains(utiltestingapi.MakeTopologyDomainAssignment([]string{"node-a"}, 4).Obj()).
+									Obj()).
+								Obj(),
+						).
+						Obj(), now,
+				).
+				ReclaimablePods(
+					kueue.ReclaimablePod{
+						Name:  "workers",
+						Count: 2,
+					},
+				).
+				Obj(),
+			wantInfo: Info{
+				ClusterQueue: "tas-cq",
+				TotalRequests: []PodSetResources{
+					{
+						Name: "workers",
+						Flavors: map[corev1.ResourceName]kueue.ResourceFlavorReference{
+							corev1.ResourceCPU: "tas",
+						},
+						Requests: resources.NewRequestsFromMap(map[corev1.ResourceName]int64{
+							corev1.ResourceCPU: 2000,
+						}),
+						Count: 2,
+						TopologyRequest: &TopologyRequest{
+							Levels: []string{corev1.LabelHostname},
+							DomainRequests: []TopologyDomainRequests{{
+								Values: []string{"node-a"},
+								SinglePodRequests: resources.NewRequestsFromMap(map[corev1.ResourceName]int64{
+									corev1.ResourceCPU: 1000,
+								}),
+								Count: 4,
 							}},
 						},
 					},
@@ -1049,10 +1187,11 @@ func TestNewInfo(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			_, log := utiltesting.ContextWithLog(t)
 			for fg, enabled := range tc.featureGates {
 				features.SetFeatureGateDuringTest(t, fg, enabled)
 			}
-			info := NewInfo(&tc.workload, tc.infoOptions...)
+			info := NewInfo(log, &tc.workload, tc.infoOptions...)
 			if diff := cmp.Diff(info, &tc.wantInfo, cmpopts.IgnoreFields(Info{}, "Obj", "SchedulingHash"), cmp.Comparer(resources.Equal)); diff != "" {
 				t.Errorf("NewInfo(_) = (-want,+got):\n%s", diff)
 			}
@@ -1146,13 +1285,14 @@ func TestUpdateWithRebuild(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			info := NewInfo(tc.initial, tc.initialOptions...)
+			_, log := utiltesting.ContextWithLog(t)
+			info := NewInfo(log, tc.initial, tc.initialOptions...)
 			if len(tc.updateOptions) == 0 {
 				if diff := cmp.Diff(tc.wantRequests, info.TotalRequests, cmpopts.IgnoreFields(PodSetResources{}, "Flavors"), cmp.Comparer(resources.Equal)); diff == "" {
 					t.Fatal("precondition failed: initial TotalRequests should differ from expected post-rebuild state")
 				}
 			}
-			info.Update(logr.Discard(), tc.updated, tc.updateOptions...)
+			info.Update(log, tc.updated, tc.updateOptions...)
 			if diff := cmp.Diff(tc.wantRequests, info.TotalRequests,
 				cmpopts.IgnoreFields(PodSetResources{}, "Flavors"), cmp.Comparer(resources.Equal)); diff != "" {
 				t.Errorf("TotalRequests after Update (-want,+got):\n%s", diff)
@@ -1503,15 +1643,15 @@ func TestLimitReclaimablePodsToPodSetSizes(t *testing.T) {
 
 func TestAssignmentClusterQueueState(t *testing.T) {
 	cases := map[string]struct {
-		state              *AssignmentClusterQueueState
+		state              *FlavorScanState
 		wantPendingFlavors bool
 	}{
 		"no info": {
 			wantPendingFlavors: false,
 		},
 		"all done": {
-			state: &AssignmentClusterQueueState{
-				LastTriedFlavorIdx: []map[corev1.ResourceName]int{
+			state: &FlavorScanState{
+				LastTriedFlavorIndexes: []map[corev1.ResourceName]int{
 					{
 						corev1.ResourceCPU:    -1,
 						corev1.ResourceMemory: -1,
@@ -1524,8 +1664,8 @@ func TestAssignmentClusterQueueState(t *testing.T) {
 			wantPendingFlavors: false,
 		},
 		"some pending": {
-			state: &AssignmentClusterQueueState{
-				LastTriedFlavorIdx: []map[corev1.ResourceName]int{
+			state: &FlavorScanState{
+				LastTriedFlavorIndexes: []map[corev1.ResourceName]int{
 					{
 						corev1.ResourceCPU:    0,
 						corev1.ResourceMemory: -1,
@@ -1538,8 +1678,8 @@ func TestAssignmentClusterQueueState(t *testing.T) {
 			wantPendingFlavors: true,
 		},
 		"all pending": {
-			state: &AssignmentClusterQueueState{
-				LastTriedFlavorIdx: []map[corev1.ResourceName]int{
+			state: &FlavorScanState{
+				LastTriedFlavorIndexes: []map[corev1.ResourceName]int{
 					{
 						corev1.ResourceCPU:    1,
 						corev1.ResourceMemory: 0,
@@ -1753,6 +1893,244 @@ func TestFlavorResourceUsage(t *testing.T) {
 			got := tc.info.FlavorResourceUsage()
 			if diff := cmp.Diff(tc.want, got); diff != "" {
 				t.Errorf("info.ResourceUsage() returned (-want,+got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestTASUsage(t *testing.T) {
+	features.SetFeatureGateDuringTest(t, features.TopologyAwareScheduling, true)
+	cases := map[string]struct {
+		info         *Info
+		want         TASUsage
+		featureGates map[featuregate.Feature]bool
+	}{
+		"not using TAS": {
+			info: &Info{
+				TotalRequests: []PodSetResources{
+					{
+						Count: 1,
+						Requests: resources.NewRequestsFromMap(map[corev1.ResourceName]int64{
+							corev1.ResourceCPU: 1000,
+						}),
+						Flavors: map[corev1.ResourceName]kueue.ResourceFlavorReference{
+							corev1.ResourceCPU: "default",
+						},
+					},
+				},
+			},
+			want: nil,
+		},
+		"multiple podsets using TAS": {
+			info: &Info{
+				TotalRequests: []PodSetResources{
+					{
+						Name:  "driver",
+						Count: 1,
+						Flavors: map[corev1.ResourceName]kueue.ResourceFlavorReference{
+							corev1.ResourceCPU: "tas-flavor",
+						},
+						TopologyRequest: &TopologyRequest{
+							Levels: []string{corev1.LabelHostname},
+							DomainRequests: []TopologyDomainRequests{{
+								Values: []string{"node-a"},
+								SinglePodRequests: resources.NewRequestsFromMap(map[corev1.ResourceName]int64{
+									corev1.ResourceCPU: 1000,
+								}),
+								Count: 1,
+							}},
+						},
+					},
+					{
+						Name:  "workers",
+						Count: 2,
+						Flavors: map[corev1.ResourceName]kueue.ResourceFlavorReference{
+							corev1.ResourceCPU: "tas-flavor",
+						},
+						TopologyRequest: &TopologyRequest{
+							Levels: []string{corev1.LabelHostname},
+							DomainRequests: []TopologyDomainRequests{{
+								Values: []string{"node-b"},
+								SinglePodRequests: resources.NewRequestsFromMap(map[corev1.ResourceName]int64{
+									corev1.ResourceCPU: 1000,
+								}),
+								Count: 2,
+							}},
+						},
+					},
+				},
+			},
+			want: TASUsage{
+				"tas-flavor": []TopologyDomainRequests{
+					{
+						Values: []string{"node-a"},
+						SinglePodRequests: resources.NewRequestsFromMap(map[corev1.ResourceName]int64{
+							corev1.ResourceCPU: 1000,
+						}),
+						Count: 1,
+					},
+					{
+						Values: []string{"node-b"},
+						SinglePodRequests: resources.NewRequestsFromMap(map[corev1.ResourceName]int64{
+							corev1.ResourceCPU: 1000,
+						}),
+						Count: 2,
+					},
+				},
+			},
+		},
+		"one podset completed (cleared TopologyRequest), only active podset included": {
+			info: &Info{
+				TotalRequests: []PodSetResources{
+					{
+						Name:  "driver",
+						Count: 1,
+						Flavors: map[corev1.ResourceName]kueue.ResourceFlavorReference{
+							corev1.ResourceCPU: "tas-flavor",
+						},
+						TopologyRequest: &TopologyRequest{
+							Levels: []string{corev1.LabelHostname},
+							DomainRequests: []TopologyDomainRequests{{
+								Values: []string{"node-a"},
+								SinglePodRequests: resources.NewRequestsFromMap(map[corev1.ResourceName]int64{
+									corev1.ResourceCPU: 1000,
+								}),
+								Count: 1,
+							}},
+						},
+					},
+					{
+						Name:    "workers",
+						Count:   0,
+						Flavors: map[corev1.ResourceName]kueue.ResourceFlavorReference{corev1.ResourceCPU: "tas-flavor"},
+						TopologyRequest: &TopologyRequest{
+							Levels: []string{corev1.LabelHostname},
+							DomainRequests: []TopologyDomainRequests{{
+								Values: []string{"node-b"},
+								SinglePodRequests: resources.NewRequestsFromMap(map[corev1.ResourceName]int64{
+									corev1.ResourceCPU: 1000,
+								}),
+								Count: 2,
+							}},
+						},
+					},
+				},
+			},
+			want: TASUsage{
+				"tas-flavor": []TopologyDomainRequests{
+					{
+						Values: []string{"node-a"},
+						SinglePodRequests: resources.NewRequestsFromMap(map[corev1.ResourceName]int64{
+							corev1.ResourceCPU: 1000,
+						}),
+						Count: 1,
+					},
+				},
+			},
+		},
+		"all podsets completed (count == 0), returns empty usage": {
+			info: &Info{
+				TotalRequests: []PodSetResources{
+					{
+						Name:    "driver",
+						Count:   0,
+						Flavors: map[corev1.ResourceName]kueue.ResourceFlavorReference{corev1.ResourceCPU: "tas-flavor"},
+						TopologyRequest: &TopologyRequest{
+							Levels: []string{corev1.LabelHostname},
+							DomainRequests: []TopologyDomainRequests{{
+								Values: []string{"node-a"},
+								SinglePodRequests: resources.NewRequestsFromMap(map[corev1.ResourceName]int64{
+									corev1.ResourceCPU: 1000,
+								}),
+								Count: 1,
+							}},
+						},
+					},
+					{
+						Name:    "workers",
+						Count:   0,
+						Flavors: map[corev1.ResourceName]kueue.ResourceFlavorReference{corev1.ResourceCPU: "tas-flavor"},
+						TopologyRequest: &TopologyRequest{
+							Levels: []string{corev1.LabelHostname},
+							DomainRequests: []TopologyDomainRequests{{
+								Values: []string{"node-b"},
+								SinglePodRequests: resources.NewRequestsFromMap(map[corev1.ResourceName]int64{
+									corev1.ResourceCPU: 1000,
+								}),
+								Count: 2,
+							}},
+						},
+					},
+				},
+			},
+			want: TASUsage{},
+		},
+		"workload with completed podSet does not exclude it from TAS usage when ReclaimablePods is disabled": {
+			info: &Info{
+				TotalRequests: []PodSetResources{
+					{
+						Name:  "driver",
+						Count: 1,
+						Flavors: map[corev1.ResourceName]kueue.ResourceFlavorReference{
+							corev1.ResourceCPU: "tas-flavor",
+						},
+						TopologyRequest: &TopologyRequest{
+							Levels: []string{corev1.LabelHostname},
+							DomainRequests: []TopologyDomainRequests{{
+								Values: []string{"node-a"},
+								SinglePodRequests: resources.NewRequestsFromMap(map[corev1.ResourceName]int64{
+									corev1.ResourceCPU: 1000,
+								}),
+								Count: 1,
+							}},
+						},
+					},
+					{
+						Name:    "workers",
+						Count:   0,
+						Flavors: map[corev1.ResourceName]kueue.ResourceFlavorReference{corev1.ResourceCPU: "tas-flavor"},
+						TopologyRequest: &TopologyRequest{
+							Levels: []string{corev1.LabelHostname},
+							DomainRequests: []TopologyDomainRequests{{
+								Values: []string{"node-b"},
+								SinglePodRequests: resources.NewRequestsFromMap(map[corev1.ResourceName]int64{
+									corev1.ResourceCPU: 1000,
+								}),
+								Count: 2,
+							}},
+						},
+					},
+				},
+			},
+			featureGates: map[featuregate.Feature]bool{
+				features.ReclaimablePods: false,
+			},
+			want: TASUsage{
+				"tas-flavor": []TopologyDomainRequests{
+					{
+						Values: []string{"node-a"},
+						SinglePodRequests: resources.NewRequestsFromMap(map[corev1.ResourceName]int64{
+							corev1.ResourceCPU: 1000,
+						}),
+						Count: 1,
+					},
+					{
+						Values: []string{"node-b"},
+						SinglePodRequests: resources.NewRequestsFromMap(map[corev1.ResourceName]int64{
+							corev1.ResourceCPU: 1000,
+						}),
+						Count: 2,
+					},
+				},
+			},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			features.SetFeatureGatesDuringTest(t, tc.featureGates)
+			got := tc.info.TASUsage()
+			if diff := cmp.Diff(tc.want, got, cmp.Comparer(resources.Equal)); diff != "" {
+				t.Errorf("info.TASUsage() returned (-want,+got):\n%s", diff)
 			}
 		})
 	}
@@ -2451,7 +2829,8 @@ func TestWithPreprocessedDRAResources(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			info := NewInfo(&tc.workload, WithPreprocessedDRAResources(tc.draResources, nil))
+			_, log := utiltesting.ContextWithLog(t)
+			info := NewInfo(log, &tc.workload, WithPreprocessedDRAResources(tc.draResources, nil))
 
 			if diff := cmp.Diff(tc.wantInfo.TotalRequests, info.TotalRequests, cmp.Comparer(resources.Equal)); diff != "" {
 				t.Errorf("Unexpected TotalRequests (-want,+got):\n%s", diff)
@@ -2532,7 +2911,8 @@ func TestWithPreprocessedDRAResourcesReplacesExtendedResources(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			info := NewInfo(&tc.workload, WithPreprocessedDRAResources(tc.draResources, tc.replacedExtendedResources))
+			_, log := utiltesting.ContextWithLog(t)
+			info := NewInfo(log, &tc.workload, WithPreprocessedDRAResources(tc.draResources, tc.replacedExtendedResources))
 
 			if diff := cmp.Diff(tc.wantInfo.TotalRequests, info.TotalRequests, cmp.Comparer(resources.Equal)); diff != "" {
 				t.Errorf("Unexpected TotalRequests (-want,+got):\n%s", diff)
@@ -3792,11 +4172,12 @@ func TestSchedulingHash(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			_, log := utiltesting.ContextWithLog(t)
 			features.SetFeatureGatesDuringTest(t, tc.featureGates)
-			info1 := NewInfo(tc.wl1)
-			info1.updateSchedulingHash(logr.Discard())
-			info2 := NewInfo(tc.wl2)
-			info2.updateSchedulingHash(logr.Discard())
+			info1 := NewInfo(log, tc.wl1)
+			info1.updateSchedulingHash(log)
+			info2 := NewInfo(log, tc.wl2)
+			info2.updateSchedulingHash(log)
 			if info1.SchedulingHash == "" {
 				t.Error("SchedulingHash should not be empty")
 			}
@@ -3810,15 +4191,16 @@ func TestSchedulingHash(t *testing.T) {
 	}
 
 	t.Run("DRA translation producing different TotalRequests produces different hash", func(t *testing.T) {
+		_, log := utiltesting.ContextWithLog(t)
 		features.SetFeatureGatesDuringTest(t, map[featuregate.Feature]bool{
 			features.SchedulingEquivalenceHashing: true,
 		})
 		wl := utiltestingapi.MakeWorkload("wl", "ns").
 			Request("example.com/gpu", "1").Obj()
-		before := NewInfo(wl)
-		before.updateSchedulingHash(logr.Discard())
+		before := NewInfo(log, wl)
+		before.updateSchedulingHash(log)
 
-		after := NewInfo(wl, WithPreprocessedDRAResources(
+		after := NewInfo(log, wl, WithPreprocessedDRAResources(
 			map[kueue.PodSetReference]corev1.ResourceList{
 				kueue.DefaultPodSetName: {
 					"gpu": resource.MustParse("1"),
@@ -3828,7 +4210,7 @@ func TestSchedulingHash(t *testing.T) {
 				kueue.DefaultPodSetName: sets.New[corev1.ResourceName]("example.com/gpu"),
 			},
 		))
-		after.updateSchedulingHash(logr.Discard())
+		after.updateSchedulingHash(log)
 
 		if diff := cmp.Diff(before.TotalRequests, after.TotalRequests, cmp.Comparer(resources.Equal)); diff == "" {
 			t.Fatal("precondition failed: TotalRequests should differ after DRA translation")
@@ -3840,6 +4222,7 @@ func TestSchedulingHash(t *testing.T) {
 }
 
 func TestUpdateSchedulingHashReuse(t *testing.T) {
+	_, log := utiltesting.ContextWithLog(t)
 	features.SetFeatureGatesDuringTest(t, map[featuregate.Feature]bool{
 		features.SchedulingEquivalenceHashing: true,
 	})
@@ -3874,27 +4257,27 @@ func TestUpdateSchedulingHashReuse(t *testing.T) {
 		wantReuse bool
 	}{
 		"same UID and ResourceVersion keeps the hash": {
-			info:      NewInfo(workload("uid", "1", 1)),
+			info:      NewInfo(log, workload("uid", "1", 1)),
 			reread:    workload("uid", "1", 2),
 			wantReuse: true,
 		},
 		"changed ResourceVersion recomputes the hash": {
-			info:   NewInfo(workload("uid", "1", 1)),
+			info:   NewInfo(log, workload("uid", "1", 1)),
 			reread: workload("uid", "2", 2),
 		},
 		"changed UID recomputes the hash": {
-			info:   NewInfo(workload("uid", "1", 1)),
+			info:   NewInfo(log, workload("uid", "1", 1)),
 			reread: workload("other", "1", 2),
 		},
 		// Objects that never round-tripped through the API server share the
 		// empty ResourceVersion, which says nothing about their shape.
 		"absent ResourceVersion on both sides recomputes the hash": {
-			info:   NewInfo(workload("uid", "", 1)),
+			info:   NewInfo(log, workload("uid", "", 1)),
 			reread: workload("uid", "", 2),
 		},
 		"an Info holding no hash computes one": {
 			// Requests match, so only the missing hash can force the recompute.
-			info:   withoutHash(NewInfo(workload("uid", "1", 1))),
+			info:   withoutHash(NewInfo(log, workload("uid", "1", 1))),
 			reread: workload("uid", "1", 2),
 		},
 		"an Info holding no object computes one": {
@@ -3904,7 +4287,7 @@ func TestUpdateSchedulingHashReuse(t *testing.T) {
 		// The requeue path carries DRA-preprocessed requests over deliberately,
 		// which leaves the version check to decide alone.
 		"preserved TotalRequests leave the decision to the version check": {
-			info: NewInfo(workload("uid", "1", 1)),
+			info: NewInfo(log, workload("uid", "1", 1)),
 			reread: utiltestingapi.MakeWorkload("wl", "ns").UID("uid").ResourceVersion("1").
 				Priority(2).Request(corev1.ResourceCPU, "2").Obj(),
 			opts:      []InfoOption{WithPreserveTotalRequests()},
@@ -3913,25 +4296,26 @@ func TestUpdateSchedulingHashReuse(t *testing.T) {
 		// The requeue path drops the DRA options when NeedsDRAReconcile turns
 		// false, which it can do at an unchanged ResourceVersion.
 		"dropped DRA preprocessing recomputes the hash": {
-			info:   NewInfo(draWorkload, draOptions...),
+			info:   NewInfo(log, draWorkload, draOptions...),
 			reread: draWorkload,
 		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			_, log := utiltesting.ContextWithLog(t)
 			before := tc.info.SchedulingHash
 			if before == SchedulingHashUnknown {
 				t.Fatalf("precondition failed: hash is %q", before)
 			}
 
-			tc.info.Update(logr.Discard(), tc.reread, tc.opts...)
+			tc.info.Update(log, tc.reread, tc.opts...)
 
 			if got := tc.info.SchedulingHash == before; got != tc.wantReuse {
 				t.Errorf("hash reused = %v, want %v (hash %q -> %q)", got, tc.wantReuse, before, tc.info.SchedulingHash)
 			}
 			// A recomputed hash must describe the inputs the Info now holds.
 			if !tc.wantReuse {
-				want := computeSchedulingHash(logr.Discard(), tc.info.Obj, tc.info.TotalRequests)
+				want := computeSchedulingHash(log, tc.info.Obj, tc.info.TotalRequests)
 				if tc.info.SchedulingHash != want {
 					t.Errorf("SchedulingHash = %q, does not describe the Info's own inputs (%q)", tc.info.SchedulingHash, want)
 				}
@@ -3940,11 +4324,12 @@ func TestUpdateSchedulingHashReuse(t *testing.T) {
 	}
 
 	t.Run("the hash stays unknown while the feature gate is off", func(t *testing.T) {
+		_, log := utiltesting.ContextWithLog(t)
 		features.SetFeatureGatesDuringTest(t, map[featuregate.Feature]bool{
 			features.SchedulingEquivalenceHashing: false,
 		})
-		info := NewInfo(workload("uid", "1", 1))
-		info.Update(logr.Discard(), workload("uid", "1", 2))
+		info := NewInfo(log, workload("uid", "1", 1))
+		info.Update(log, workload("uid", "1", 2))
 		if info.SchedulingHash != SchedulingHashUnknown {
 			t.Errorf("SchedulingHash = %q, want %q", info.SchedulingHash, SchedulingHashUnknown)
 		}
@@ -4386,6 +4771,7 @@ func TestCalcFSUsageFromResourcesWithNonPositiveWeight(t *testing.T) {
 }
 
 func TestSumTotalRequestsWithDRAFromAdmission(t *testing.T) {
+	_, log := utiltesting.ContextWithLog(t)
 	fakeClock := testingclock.NewFakeClock(time.Now())
 	now := fakeClock.Now()
 	wl := utiltestingapi.MakeWorkload("test-wl", "default").
@@ -4405,7 +4791,7 @@ func TestSumTotalRequestsWithDRAFromAdmission(t *testing.T) {
 				).Obj(), now,
 		).Obj()
 
-	info := NewInfo(wl)
+	info := NewInfo(log, wl)
 	sumReqs := info.SumTotalRequests()
 
 	// Verify CPU is present
@@ -4546,6 +4932,7 @@ func TestCalcLocalQueueFSUsage(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			_, log := utiltesting.ContextWithLog(t)
 			wl := utiltestingapi.MakeWorkload("wl", "ns").Queue("lq").Obj()
 			cl := utiltesting.NewClientBuilder().
 				WithInterceptorFuncs(interceptor.Funcs{
@@ -4555,7 +4942,7 @@ func TestCalcLocalQueueFSUsage(t *testing.T) {
 				}).
 				Build()
 
-			info := NewInfo(wl)
+			info := NewInfo(log, wl)
 
 			resWeights := map[corev1.ResourceName]float64{corev1.ResourceCPU: 5.0}
 

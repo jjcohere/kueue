@@ -21,6 +21,7 @@ import (
 	stderrors "errors"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -54,6 +55,7 @@ import (
 	utilindexer "sigs.k8s.io/kueue/pkg/controller/core/indexer"
 	"sigs.k8s.io/kueue/pkg/dra"
 	"sigs.k8s.io/kueue/pkg/features"
+	"sigs.k8s.io/kueue/pkg/resources"
 	preemptexpectations "sigs.k8s.io/kueue/pkg/scheduler/preemption/expectations"
 	afs "sigs.k8s.io/kueue/pkg/util/admissionfairsharing"
 	utilqueue "sigs.k8s.io/kueue/pkg/util/queue"
@@ -404,6 +406,14 @@ var (
 		cmpopts.IgnoreFields(kueue.RequeueState{}, "RequeueAt"),
 		cmpopts.SortSlices(func(a, b metav1.Condition) bool { return a.Type < b.Type }),
 	}
+
+	pendingWorkloadsCmpOpts = cmp.Options{
+		cmpopts.IgnoreFields(workload.Info{},
+			"Obj", "FlavorScanState", "LocalQueueFSUsage", "SecondPassIteration",
+			"LastEvaluatedGeneration", "SchedulingHash", "NominationMapping",
+		),
+		cmp.Comparer(resources.Equal),
+	}
 )
 
 var (
@@ -428,7 +438,11 @@ type reconcileTestCase struct {
 	patchErr                  error
 	listErr                   error
 	wantDRAResourceTotal      *int64
+	wantAbsentDRAResources    []corev1.ResourceName
 	wantWorkloadsInQueue      *int
+	wantPendingWorkloads      map[kueue.ClusterQueueReference]map[workload.Reference]*workload.Info
+	wantWorkloadInHeap        *bool
+	wantWorkloadInadmissible  *bool
 	wantWorkload              *kueue.Workload
 	wantWorkloadUseMergePatch *kueue.Workload // workload version to compensate for the difference between use of Apply and Merge patch in FakeClient
 	wantError                 error
@@ -627,7 +641,7 @@ func TestUpdateSettlesAfsEntryPenalty(t *testing.T) {
 			qManager := qcache.NewManagerForUnitTests(cl, cqCache, qcache.WithAdmissionFairSharing(afsConfig))
 			reconciler := NewWorkloadReconciler(cl, qManager, cqCache, recorder, WithAdmissionFairSharing(afsConfig))
 
-			ctx, _ := utiltesting.ContextWithLog(t)
+			ctx, log := utiltesting.ContextWithLog(t)
 			cq := utiltestingapi.MakeClusterQueue("cq").
 				AdmissionMode(kueue.UsageBasedAdmissionFairSharing).
 				Active(metav1.ConditionTrue).
@@ -641,7 +655,7 @@ func TestUpdateSettlesAfsEntryPenalty(t *testing.T) {
 
 			// Seed the per-Workload penalty record the scheduler would have
 			// pushed at assume time; the settlement folds exactly this record.
-			seeded := afs.CalculateEntryPenalty(workload.NewInfo(tc.newWl).SumTotalRequests(), afsConfig)
+			seeded := afs.CalculateEntryPenalty(workload.NewInfo(log, tc.newWl).SumTotalRequests(), afsConfig)
 			if len(seeded) == 0 {
 				t.Fatal("the seeded penalty is empty, so the settlement would subtract nothing and every case would pass")
 			}
@@ -665,6 +679,7 @@ func TestUpdateSettlesAfsEntryPenalty(t *testing.T) {
 }
 
 func TestReconcile(t *testing.T) {
+	_, log := utiltesting.ContextWithLog(t)
 	// the clock is primarily used with second rounded times
 	// use the current time trimmed.
 	now := time.Now().Truncate(time.Second)
@@ -1727,7 +1742,7 @@ func TestReconcile(t *testing.T) {
 					panic(err)
 				}
 				qManager.Heads(ctx) // Pop from active heap
-				wInfo := workload.NewInfo(wl)
+				wInfo := workload.NewInfo(log, wl)
 				qManager.RequeueWorkload(ctx, wInfo, qcache.RequeueReasonNoFit, qcache.QuotaReservedReasonWaitingForQuota)
 			},
 			wantWorkload: utiltestingapi.MakeWorkload("wl", "ns").
@@ -1765,7 +1780,7 @@ func TestReconcile(t *testing.T) {
 					panic(err)
 				}
 				qManager.Heads(ctx) // Pop from active heap
-				wInfo := workload.NewInfo(wl)
+				wInfo := workload.NewInfo(log, wl)
 				qManager.RequeueWorkload(ctx, wInfo, qcache.RequeueReasonNoFit, qcache.QuotaReservedReasonWaitingForQuota)
 			},
 			wantWorkload: utiltestingapi.MakeWorkload("wl", "ns").
@@ -1797,7 +1812,7 @@ func TestReconcile(t *testing.T) {
 					panic(err)
 				}
 				qManager.Heads(ctx) // Pop from active heap
-				wInfo := workload.NewInfo(wl)
+				wInfo := workload.NewInfo(log, wl)
 				qManager.RequeueWorkload(ctx, wInfo, qcache.RequeueReasonNoFit, qcache.QuotaReservedReasonWaitingForQuota)
 			},
 			wantWorkload: utiltestingapi.MakeWorkload("wl", "ns").
@@ -1835,7 +1850,7 @@ func TestReconcile(t *testing.T) {
 					panic(err)
 				}
 				qManager.Heads(ctx) // Pop from active heap
-				wInfo := workload.NewInfo(wl)
+				wInfo := workload.NewInfo(log, wl)
 				qManager.RequeueWorkload(ctx, wInfo, qcache.RequeueReasonNoFit, qcache.QuotaReservedReasonWaitingForQuota)
 			},
 			wantWorkload: utiltestingapi.MakeWorkload("wl", "ns").
@@ -1992,9 +2007,7 @@ func runReconcileTestCases(t *testing.T, cases map[string]reconcileTestCase, fak
 					setupLocalQueue(ctx, t, cl, qManager, tc.lq, tc.shouldDeleteLQ)
 				}
 
-				if testWl != nil && testWl.Namespace == "ns" &&
-					len(testWl.Spec.PodSets) > 0 &&
-					len(testWl.Spec.PodSets[0].Template.Spec.ResourceClaims) > 0 {
+				if needsDRAMapperSetup(tc, testWl) {
 					draConfig := []configapi.DeviceClassMapping{
 						{
 							Name:             corev1.ResourceName("foo"),
@@ -2002,7 +2015,7 @@ func runReconcileTestCases(t *testing.T, cases map[string]reconcileTestCase, fak
 						},
 						{
 							Name:             corev1.ResourceName("gpu"),
-							DeviceClassNames: []corev1.ResourceName{"gpu.example.com"},
+							DeviceClassNames: []corev1.ResourceName{"gpu.example.com", "gpu-class"},
 						},
 					}
 					draMapper := dra.NewResourceMapper()
@@ -2071,11 +2084,25 @@ func runReconcileTestCases(t *testing.T, cases map[string]reconcileTestCase, fak
 					t.Errorf("unexpected events (-want/+got):\n%s", diff)
 				}
 
+				if tc.wantPendingWorkloads != nil {
+					gotPendingWorkloads := make(map[kueue.ClusterQueueReference]map[workload.Reference]*workload.Info)
+					for _, cqName := range qManager.GetClusterQueueNames() {
+						for _, wlInfo := range qManager.PendingWorkloadsInfo(cqName) {
+							if gotPendingWorkloads[cqName] == nil {
+								gotPendingWorkloads[cqName] = make(map[workload.Reference]*workload.Info)
+							}
+							gotPendingWorkloads[cqName][workload.Key(wlInfo.Obj)] = wlInfo
+						}
+					}
+					if diff := cmp.Diff(tc.wantPendingWorkloads, gotPendingWorkloads, pendingWorkloadsCmpOpts...); diff != "" {
+						t.Errorf("unexpected pending workloads (-want,+got):\n%s", diff)
+					}
+				}
+
 				// For DRA tests, verify that workloads are properly queued/cached
-				if tc.featureGates[features.KueueDRAIntegration] && testWl != nil &&
-					len(testWl.Spec.PodSets) > 0 &&
-					len(testWl.Spec.PodSets[0].Template.Spec.ResourceClaims) > 0 {
+				if needsDRAQueueVerification(tc, testWl) {
 					workloadKey := client.ObjectKeyFromObject(testWl)
+					wlRef := workload.Key(testWl)
 
 					if cqName, found := qManager.ClusterQueueFromLocalQueue(utilqueue.KeyFromWorkload(testWl)); found {
 						pendingWorkloads := qManager.PendingWorkloadsInfo(cqName)
@@ -2093,7 +2120,7 @@ func runReconcileTestCases(t *testing.T, cases map[string]reconcileTestCase, fak
 						for _, wlInfo := range pendingWorkloads {
 							if wlInfo.Obj.Name == workloadKey.Name && wlInfo.Obj.Namespace == workloadKey.Namespace {
 								foundInQueue = true
-								if len(tc.resourceClaimTemplates) > 0 && wlInfo.TotalRequests != nil {
+								if wlInfo.TotalRequests != nil && (tc.wantDRAResourceTotal != nil || len(tc.wantAbsentDRAResources) > 0) {
 									t.Logf("DRA workload found in queue with TotalRequests: %+v", wlInfo.TotalRequests)
 
 									if tc.wantDRAResourceTotal != nil {
@@ -2110,8 +2137,31 @@ func runReconcileTestCases(t *testing.T, cases map[string]reconcileTestCase, fak
 											t.Errorf("Expected TotalRequests with DRA resources, but TotalRequests is empty")
 										}
 									}
+									for _, resName := range tc.wantAbsentDRAResources {
+										if len(wlInfo.TotalRequests) > 0 && wlInfo.TotalRequests[0].Requests != nil {
+											var found bool
+											wlInfo.TotalRequests[0].Requests.ForEach(func(name corev1.ResourceName, _ int64) {
+												if name == resName {
+													found = true
+												}
+											})
+											if found {
+												t.Errorf("Expected resource %q to be absent from queued TotalRequests", resName)
+											}
+										}
+									}
 								}
 								break
+							}
+						}
+						if tc.wantWorkloadInHeap != nil || tc.wantWorkloadInadmissible != nil {
+							inHeap := workloadRefInDump(qManager.Dump(), cqName, wlRef)
+							inInadmissible := workloadRefInDump(qManager.DumpInadmissible(), cqName, wlRef)
+							if tc.wantWorkloadInHeap != nil && inHeap != *tc.wantWorkloadInHeap {
+								t.Errorf("Expected workload in heap=%v, got %v", *tc.wantWorkloadInHeap, inHeap)
+							}
+							if tc.wantWorkloadInadmissible != nil && inInadmissible != *tc.wantWorkloadInadmissible {
+								t.Errorf("Expected workload in inadmissible=%v, got %v", *tc.wantWorkloadInadmissible, inInadmissible)
 							}
 						}
 						if tc.wantWorkloadsInQueue != nil && !foundInQueue {
@@ -2291,6 +2341,40 @@ func setupClusterQueue(ctx context.Context, t *testing.T, cl client.Client, qMan
 			t.Fatalf("couldn't delete the cluster queue: %v", err)
 		}
 	}
+}
+
+func needsDRAMapperSetup(tc reconcileTestCase, testWl *kueue.Workload) bool {
+	if testWl == nil || testWl.Namespace != "ns" || len(testWl.Spec.PodSets) == 0 {
+		return false
+	}
+	if len(testWl.Spec.PodSets[0].Template.Spec.ResourceClaims) > 0 {
+		return true
+	}
+	if tc.featureGates[features.KueueDRAIntegrationExtendedResource] {
+		for _, obj := range tc.additionalObjects {
+			if _, ok := obj.(*resourcev1.DeviceClass); ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func needsDRAQueueVerification(tc reconcileTestCase, testWl *kueue.Workload) bool {
+	if !tc.featureGates[features.KueueDRAIntegration] || testWl == nil || len(testWl.Spec.PodSets) == 0 {
+		return false
+	}
+	return len(testWl.Spec.PodSets[0].Template.Spec.ResourceClaims) > 0 ||
+		len(tc.resourceClaimTemplates) > 0 ||
+		tc.wantDRAResourceTotal != nil ||
+		len(tc.wantAbsentDRAResources) > 0 ||
+		tc.wantWorkloadsInQueue != nil ||
+		tc.wantWorkloadInHeap != nil ||
+		tc.wantWorkloadInadmissible != nil
+}
+
+func workloadRefInDump(dump map[kueue.ClusterQueueReference][]workload.Reference, cqName kueue.ClusterQueueReference, wlRef workload.Reference) bool {
+	return slices.Contains(dump[cqName], wlRef)
 }
 
 func setupLocalQueue(ctx context.Context, t *testing.T, cl client.Client, qManager *qcache.Manager, lq *kueue.LocalQueue, shouldDelete bool) {
